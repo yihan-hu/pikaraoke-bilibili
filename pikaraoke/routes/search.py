@@ -93,7 +93,13 @@ def search():
 @search_bp.arguments(PreviewQuery, location="query")
 def preview(query):
     """Get a direct stream URL for previewing a YouTube video."""
-    stream_url = get_stream_url(query["url"])
+    from pikaraoke.lib.bilibili import normalize_url
+
+    try:
+        url = normalize_url(query["url"])
+    except (ValueError, OSError):
+        return jsonify(error="Invalid video URL"), 400
+    stream_url = get_stream_url(url)
     if stream_url is None:
         return jsonify({"error": "Could not fetch stream URL"}), 500
     return jsonify({"stream_url": stream_url})
