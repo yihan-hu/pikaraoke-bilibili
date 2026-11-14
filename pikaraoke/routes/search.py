@@ -137,7 +137,9 @@ def download(form):
         path = k.db.get_paths_by_youtube_ids([key]).get(key)
         if path:
             if queue:
-                k.queue_manager.enqueue(path, user)
+                success, message = k.queue_manager.enqueue(path, user)
+                if not success:
+                    return jsonify(error=message), 409
             return jsonify(status="ok", existing=True)
 
     # Queue the download (processed serially by the download worker)
@@ -243,3 +245,33 @@ def bilibili_login_poll():
         return response
     except (OSError, ValueError):
         return jsonify(error="登录状态查询失败，请重试"), 502
+
+
+@search_bp.route("/bilibili-preview")
+def bilibili_preview():
+    """Relay a validated Bilibili MP4 with audio, Range and upstream Referer."""
+    import re
+    from flask import Response, stream_with_context
+    from pikaraoke.lib.bilibili_preview import open_preview
+
+    byte_range = request.headers.get("Range")
+    if byte_range and not re.fullmatch(r"bytes=(?:[0-9]+-[0-9]*|-[0-9]+)", byte_range):
+        return jsonify(error="Invalid byte range"), 400
+    try:
+        upstream = open_preview(request.args.get("url", ""), byte_range)
+    except (OSError, ValueError):
+        return jsonify(error="预览暂时不可用，请重试或打开原站"), 502
+
+    def chunks():
+        try:
+            yield from upstream.iter_content(chunk_size=64 * 1024)
+        finally:
+            upstream.close()
+
+    headers = {
+        key: upstream.headers[key]
+        for key in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges")
+        if key in upstream.headers
+    }
+    headers["Cache-Control"] = "private, no-store"
+    return Response(stream_with_context(chunks()), status=upstream.status_code, headers=headers)

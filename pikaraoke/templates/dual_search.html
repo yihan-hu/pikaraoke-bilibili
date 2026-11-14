@@ -25,32 +25,49 @@
 <div class="box">
   <label class="label" for="direct-url">粘贴 Bilibili / YouTube 视频链接</label>
   <input id="direct-url" class="input" type="url" placeholder="https://www.bilibili.com/video/BV…">
-  <button id="direct-open" class="button mt-2">读取视频 / 选择分P</button>
+  <button id="direct-open" class="button mt-2">预览</button>
+  <span class="quick-queue-action mt-2"><button type="button" id="direct-queue" class="button is-info quick-queue">点歌</button><span class="queue-feedback" role="status" aria-live="polite"></span></span>
 </div>
+<p class="is-size-7 has-text-grey my-2">多P视频点歌默认加入第1P；其他分P可在预览中选择。</p>
 <p id="status" role="status" class="my-3"></p>
 {% if search_results is not none %}
 {% if not search_results %}<p>没有找到结果。</p>{% endif %}
 {% for result in search_results %}
 <article class="box">
   <div class="is-flex" style="gap:1rem; flex-wrap:wrap">
-    <img src="{{ result.thumbnail if source == 'bilibili' else 'https://img.youtube.com/vi/' + result.video_id + '/mqdefault.jpg' }}" alt="" referrerpolicy="no-referrer" style="width:160px;max-width:100%;object-fit:contain">
+    <img class="preview-video" role="button" tabindex="0" aria-label="预览 {{ result.title }}" data-url="{{ result.url }}" data-title="{{ result.title }}" src="{{ result.thumbnail if source == 'bilibili' else 'https://img.youtube.com/vi/' + result.video_id + '/mqdefault.jpg' }}" alt="" referrerpolicy="no-referrer" style="width:160px;max-width:100%;object-fit:contain">
     <div><strong>{{ result.title }}</strong><p>{{ result.channel }} · {{ result.duration }}</p>
       <a href="{{ result.url }}" target="_blank" rel="noopener noreferrer">{{ source }} 原站 ↗</a>
-      <button class="button is-info choose-video" data-url="{{ result.url }}" data-title="{{ result.title }}">选择 / 点歌</button>
+      <button class="button preview-video" data-url="{{ result.url }}" data-title="{{ result.title }}">预览</button>
+      <span class="quick-queue-action"><button type="button" class="button is-info quick-queue" data-url="{{ result.url }}" data-title="{{ result.title }}">点歌</button><span class="queue-feedback" role="status" aria-live="polite"></span></span>
     </div>
   </div>
 </article>
 {% endfor %}
 {% endif %}
-<section id="selection" class="box" hidden>
-  <h2 id="video-title" class="title is-5"></h2>
-  <a id="original-link" target="_blank" rel="noopener noreferrer">打开原站预览 ↗</a>
-  <iframe id="bili-preview" title="Bilibili 视频预览" style="width:100%;height:300px;border:0" allowfullscreen hidden></iframe>
-  <label class="checkbox my-3"><input id="all-parts" type="checkbox"> 全选分P</label>
-  <div id="parts"></div>
-  <button class="button is-info mt-3 submit-parts" data-queue="true">下载并加入队列</button>
-  <button class="button mt-3 submit-parts" data-queue="false">保存到歌库</button>
-</section>
+<div id="selection" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="video-title">
+  <div class="modal-background selection-close"></div>
+  <div class="modal-card" style="width:850px;max-width:96vw;max-height:94vh">
+    <header class="modal-card-head"><h2 id="video-title" class="modal-card-title is-size-5"></h2><button class="delete selection-close" aria-label="关闭预览" type="button" id="selection-close"></button></header>
+    <section class="modal-card-body">
+      <p id="selection-status" role="status"></p>
+      <video id="bili-preview" controls playsinline preload="metadata" style="width:100%;max-height:42vh;background:#000" hidden></video>
+      <p id="preview-status" role="status"></p>
+      <a id="original-link" target="_blank" rel="noopener noreferrer">打开原站 ↗</a>
+      <div id="part-options" hidden>
+        <h3 class="title is-6 mt-4">选择分P（可多选，点击“试听”切换预览）</h3>
+        <input id="part-filter" class="input" type="search" placeholder="筛选分P歌名">
+        <label class="checkbox my-3"><input id="all-parts" type="checkbox"> 全选分P</label>
+        <div id="parts" style="max-height:230px;overflow-y:auto"></div>
+      </div>
+    </section>
+    <footer class="modal-card-foot" style="flex-wrap:wrap;gap:8px">
+      <span id="selected-count"></span>
+      <button class="button is-info submit-parts" type="button" data-queue="true" disabled>点歌</button><span id="modal-queue-feedback" class="queue-feedback" role="status" aria-live="polite"></span>
+      <button class="button submit-parts" type="button" data-queue="false" disabled>保存到歌库</button>
+    </footer>
+  </div>
+</div>
 {% if is_admin() %}
 <details class="box"><summary>B站登录设置（管理员）</summary>
   <p class="my-3">导入包含 SESSDATA 的 Netscape cookies 文件。凭据仅存本机；失效时请重新导入。画质取决于账号权限和画质设置。</p>
@@ -62,6 +79,17 @@
 <p class="is-size-7">基于 <a href="https://github.com/vicwomg/pikaraoke" target="_blank" rel="noopener noreferrer">PiKaraoke — Vic Wong 及贡献者</a>，本项目增加 Bilibili 支持。GPLv3，无担保。<a href="https://github.com/yihan-hu/pikaraoke-bilibili">源码与许可证</a></p>
 {% endblock %}
 {% block scripts %}
+<style>
+  [hidden] { display:none !important; }
+  .part-row { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid #444; }
+  .part-row label { flex:1; }
+  img.preview-video { cursor:pointer; }
+  .quick-queue-action { display:inline-flex; align-items:center; gap:8px; margin-left:6px; }
+  .queue-feedback { font-size:0.9rem; opacity:0; transition:opacity .4s; }
+  .queue-feedback.is-visible { opacity:1; }
+  .queue-feedback.is-error { color:#ff8b8b; }
+  .queue-feedback.is-success { color:#75dbac; }
+</style>
 <script>
 $(function () {
   setUserCookie(); loadSingerList();
@@ -73,46 +101,149 @@ $(function () {
     if (!response.ok) throw new Error(data.error || '请求失败');
     return data;
   }
+  function feedback(element, message, error = false) {
+    clearTimeout(element._fadeTimer);
+    $(element).text(message).attr('title', message).removeClass('is-success is-error').addClass(error ? 'is-error' : 'is-success').addClass('is-visible');
+    element._fadeTimer = setTimeout(() => $(element).removeClass('is-visible'), error ? 6000 : 3000);
+  }
+  async function requestSong(url, title, queue) {
+    return jsonRequest({{ url_for('search.download') | tojson }}, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({song_url:url, song_title:title, song_added_by:resolveSinger(), queue})
+    });
+  }
+  $('.quick-queue').on('click', async function () {
+    const button = this;
+    const message = $(button).siblings('.queue-feedback')[0];
+    const songUrl = button.id === 'direct-queue' ? $('#direct-url').val().trim() : button.dataset.url;
+    if (!songUrl) { feedback(message, '请先粘贴视频链接', true); return; }
+    $(button).prop('disabled', true).addClass('is-loading');
+    try {
+      const result = await requestSong(songUrl, button.dataset.title || "", true);
+      feedback(message, '点歌成功');
+      $(message).attr('title', result.existing ? '已加入播放列表' : '正在下载，完成后自动加入播放列表'); status('');
+    } catch(error) { feedback(message, error.message, true); }
+    finally { $(button).removeClass('is-loading'); setTimeout(() => $(button).prop('disabled', false), 1000); }
+  });
+  const player = document.getElementById('bili-preview');
+  let selectionGeneration = 0;
+  let detailsAbort = null;
+  function selectedIndexes() {
+    if (!entries.length) return [];
+    return entries.length === 1 ? [0] : $('.part-choice:checked').toArray().map(el => Number(el.value));
+  }
+  function updateSelection() {
+    const count = selectedIndexes().length;
+    $('#selected-count').text(entries.length ? '已选 ' + count + ' 首' : '');
+    $('.submit-parts').prop('disabled', count === 0);
+    $('#all-parts').prop('checked', entries.length > 1 && count === entries.length);
+  }
+  function previewPart(index) {
+    const entry = entries[index];
+    if (!entry) return;
+    player.pause();
+    $('#original-link').attr('href', entry.url);
+    $('#preview-status').text('正在加载预览…');
+    $('#bili-preview').prop('hidden', false);
+    const bili = new URL(entry.url).hostname.endsWith('bilibili.com');
+    if (bili) {
+      player.src = {{ url_for('search.bilibili_preview') | tojson }} + '?url=' + encodeURIComponent(entry.url);
+      player.load(); player.play().catch(() => {});
+    } else {
+      const generation = selectionGeneration;
+      jsonRequest({{ url_for('search.preview') | tojson }} + '?url=' + encodeURIComponent(entry.url)).then(data => {
+        if (generation !== selectionGeneration) return;
+        player.src = data.stream_url; player.load(); player.play().catch(() => {});
+      }).catch(error => $('#preview-status').text(error.message));
+    }
+  }
+  player.addEventListener('loadedmetadata', () => $('#preview-status').text('可播放、暂停和拖动进度条试听。'));
+  player.addEventListener('playing', () => $('#preview-status').text('正在预览'));
+  player.addEventListener('error', () => {
+    if (player.getAttribute('src')) $('#preview-status').text('预览加载失败，可重新点“试听”或打开原站；点歌按钮仍可使用。');
+  });
+  function closeSelection() {
+    selectionGeneration++;
+    if (detailsAbort) detailsAbort.abort();
+    player.pause(); player.removeAttribute('src'); player.load();
+    $('#selection').removeClass('is-active').prop('hidden', true);
+    document.documentElement.classList.remove('is-clipped');
+  }
+  $('.selection-close').on('click', closeSelection);
+  $(document).on('keydown', event => { if (event.key === 'Escape') closeSelection(); });
   async function selectVideo(url, title) {
-    status('正在读取视频…'); $('#selection').prop('hidden', true); $('#bili-preview').removeAttr('src').prop('hidden', true);
+    const generation = ++selectionGeneration;
+    if (detailsAbort) detailsAbort.abort();
+    detailsAbort = new AbortController();
+    entries = []; updateSelection();
+    player.pause(); player.removeAttribute('src'); player.load();
+    $('#bili-preview').prop('hidden', true); $('#preview-status').text('');
+    $('#parts').empty(); $('#part-options').prop('hidden', true); $('#part-filter').val('');
+    $('#video-title').text(title || '读取视频'); $('#selection-status').text('正在读取视频…');
+    $('#original-link').removeAttr('href');
+    $('#selection').prop('hidden', false).addClass('is-active');
+    document.documentElement.classList.add('is-clipped'); $('#selection-close').trigger('focus');
     try {
       const parsed = new URL(url);
       const bili = ['bilibili.com', 'www.bilibili.com', 'm.bilibili.com', 'b23.tv'].includes(parsed.hostname);
-      const data = bili ? await jsonRequest({{ url_for('search.video_details') | tojson }} + '?url=' + encodeURIComponent(url)) : {title: title || url, parts: [{part: 1, title: title || url, url: url}]};
+      const data = bili ? await jsonRequest({{ url_for('search.video_details') | tojson }} + '?url=' + encodeURIComponent(url), {signal:detailsAbort.signal}) : {title:title || url, parts:[{part:1, title:title || url, url}]};
+      if (generation !== selectionGeneration) return;
       entries = data.parts;
-      $('#video-title').text(data.title); $('#original-link').attr('href', entries[0].url);
-      $('#parts').empty(); $('#all-parts').prop('checked', false);
-      const selected = Number(parsed.searchParams.get('p') || 1);
-      entries.forEach((entry, index) => {
-        const label = $('<label class="checkbox is-block my-2">');
-        label.append($('<input type="checkbox" class="part-choice">').val(index).prop('checked', entry.part === selected));
-        label.append(document.createTextNode(' P' + entry.part + ' · ' + entry.title));
-        $('#parts').append(label);
-      });
-      if (bili) {
-        const first = new URL(entries.find(e => e.part === selected)?.url || entries[0].url);
-        $('#bili-preview').attr('src', 'https://player.bilibili.com/player.html?bvid=' + encodeURIComponent(first.pathname.split('/')[2]) + '&page=' + selected + '&autoplay=0').prop('hidden', false);
+      if (!entries.length) throw new Error('没有可用的视频');
+      $('#video-title').text(data.title);
+      const requested = Number(parsed.searchParams.get('p') || 1);
+      const initialIndex = Math.max(0, entries.findIndex(entry => entry.part === requested));
+      if (entries.length > 1) {
+        $('#part-options').prop('hidden', false);
+        entries.forEach((entry, index) => {
+          const row = $('<div class="part-row">');
+          const label = $('<label class="checkbox">');
+          label.append($('<input type="checkbox" class="part-choice">').val(index).prop('checked', index === initialIndex));
+          label.append(document.createTextNode(' P' + entry.part + ' · ' + entry.title));
+          row.append(label).append($('<button type="button" class="button is-small preview-part">试听</button>').attr('data-index', index));
+          $('#parts').append(row);
+        });
+        $('#selection-status').text('这是多P视频，请勾选要点的歌曲；可多选。');
+      } else {
+        $('#selection-status').text('单曲视频，可以直接下载或加入队列。');
       }
-      $('#selection').prop('hidden', false); status('请选择需要的分P。');
-    } catch (error) { status(error.message); }
+      updateSelection(); previewPart(initialIndex);
+    } catch(error) {
+      if (generation !== selectionGeneration || error.name === 'AbortError') return;
+      $('#selection-status').text(error.message); status(error.message);
+    }
   }
-  $('.choose-video').on('click', function () { selectVideo(this.dataset.url, this.dataset.title); });
+  $('.preview-video').on('click', function () { selectVideo(this.dataset.url, this.dataset.title); });
+  $('img.preview-video').on('keydown', function(event) { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectVideo(this.dataset.url, this.dataset.title); } });
   $('#direct-open').on('click', () => selectVideo($('#direct-url').val().trim(), ''));
-  $('#all-parts').on('change', function () { $('.part-choice').prop('checked', this.checked); });
+  $('#parts').on('change', '.part-choice', function () { updateSelection(); if (this.checked) previewPart(Number(this.value)); });
+  $('#parts').on('click', '.preview-part', function () { previewPart(Number(this.dataset.index)); });
+  $('#part-filter').on('input', function () {
+    const text = this.value.toLowerCase();
+    $('.part-row').each(function () { $(this).prop('hidden', !this.textContent.toLowerCase().includes(text)); });
+  });
+  $('#all-parts').on('change', function () { $('.part-choice').prop('checked', this.checked); updateSelection(); });
   $('.submit-parts').on('click', async function () {
-    const choices = $('.part-choice:checked').toArray();
-    if (!choices.length) { status('请至少选择一个分P。'); return; }
+    const choices = selectedIndexes();
+    if (!choices.length) return;
+    const generation = selectionGeneration;
     $('.submit-parts').prop('disabled', true);
     let accepted = 0;
-    for (const choice of choices) {
-      const entry = entries[Number(choice.value)];
+    for (const index of choices) {
+      const entry = entries[index];
+      if (generation !== selectionGeneration) break;
       try {
-        await jsonRequest({{ url_for('search.download') | tojson }}, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({song_url:entry.url, song_title:entry.title, song_added_by:resolveSinger(), queue:this.dataset.queue === 'true'})});
-        choice.checked = false; accepted++;
-      } catch (error) { status(error.message); }
+        await requestSong(entry.url, entry.title, this.dataset.queue === 'true');
+        $('#parts .part-choice').filter(function () { return Number(this.value) === index; }).prop('checked', false);
+        accepted++;
+      } catch(error) { $('#selection-status').text(error.message); }
     }
-    status('已提交 ' + accepted + ' / ' + choices.length + ' 首。下载进度见队列；未成功提交的分P保持选中。');
-    $('.submit-parts').prop('disabled', false);
+    if (generation !== selectionGeneration) return;
+    const message = '已提交 ' + accepted + ' / ' + choices.length + ' 首，下载进度请查看队列。';
+    status(message); $('#selection-status').text(message);
+    feedback(document.getElementById('modal-queue-feedback'), accepted ? (this.dataset.queue === 'true' ? '点歌成功' : '保存请求已提交') : '未提交成功，请重试', accepted === 0);
+    updateSelection();
+    if (entries.length === 1 && accepted) $('.submit-parts').prop('disabled', true);
   });
   async function credentials(method, body) {
     try {

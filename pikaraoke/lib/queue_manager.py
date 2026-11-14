@@ -230,6 +230,18 @@ class QueueManager:
         self._events.emit("now_playing_update")
         self._events.emit("skip_requested")
 
+    def shuffle(self) -> bool:
+        """Randomize waiting songs while preserving their singer, key and current playback."""
+        if len(self.queue) < 2:
+            return False
+        before = self.queue[:]
+        random.shuffle(self.queue)
+        if self.queue == before:
+            self.queue.append(self.queue.pop(0))
+        self._events.emit("queue_update")
+        self._events.emit("now_playing_update")
+        return True
+
     def reorder(self, old_index: int, new_index: int) -> bool:
         """Move a song from old_index to new_index. Returns False if indices are invalid."""
         if not (0 <= old_index < len(self.queue) and 0 <= new_index < len(self.queue)):

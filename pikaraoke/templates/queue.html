@@ -25,6 +25,24 @@
     };
   }
 
+  $(document).off('click.shuffleQueue', '#shuffle-queue').on('click.shuffleQueue', '#shuffle-queue', function () {
+    const button = this;
+    $(button).prop('disabled', true).addClass('is-loading');
+    $('#shuffle-feedback').stop(true, true).text('');
+    $.ajax({url:{{ url_for('queue.shuffle_queue') | tojson }}, method:'POST', dataType:'json'})
+      .done(function (data) {
+        $('#shuffle-feedback').text(data.message).css('color', data.success ? '#75dbac' : '#ff8b8b').show();
+        window.queuePageState.previousQueue = null;
+        window.queuePage_getQueue();
+      })
+      .fail(function () { $('#shuffle-feedback').text('打乱失败，请检查管理员登录').css('color', '#ff8b8b').show(); })
+      .always(function () {
+        $(button).removeClass('is-loading');
+        $(button).prop('disabled', window.queuePageState.queue.length < 2);
+        setTimeout(() => $('#shuffle-feedback').fadeOut(400), 3000);
+      });
+  });
+
   // Define global queue functions
   window.queuePage_getQueue = function() {
     if ($('#auto-refresh').length === 0) {
@@ -37,6 +55,7 @@
       $.get('{{ url_for("now_playing.now_playing") }}')
     ).done(function(queueResp, nowPlayingResp) {
       var newQueue = JSON.parse(queueResp[0]);
+      $("#shuffle-queue").prop("disabled", newQueue.length < 2 || $("#shuffle-queue").hasClass("is-loading"));
       var newNowPlaying = nowPlayingResp[0] ? JSON.parse(nowPlayingResp[0]) : null;
 
       var queueChanged = !isEqual(newQueue, window.queuePageState.previousQueue);
@@ -559,6 +578,12 @@
 {% endblock %}
 
 {% block content %}
+{% if admin %}
+<div class="is-flex is-align-items-center mb-3" style="gap:10px;flex-wrap:wrap">
+  <button class="button is-info is-outlined" id="shuffle-queue" type="button" {% if queue|length < 2 %}disabled{% endif %}>随机打乱</button>
+  <span id="shuffle-feedback" role="status" aria-live="polite"></span>
+</div>
+{% endif %}
 
 <table class="table is-striped" id="auto-refresh" style="margin-bottom: 30px">
 </table>

@@ -209,3 +209,15 @@ def retry_download_error(error_id):
     if k.download_manager.retry_error(error_id):
         return json.dumps({"success": True})
     return json.dumps({"success": False, "error": "Error not found"}), 404
+
+
+@queue_bp.route("/queue/shuffle", methods=["POST"])
+def shuffle_queue():
+    """Shuffle waiting songs with the same administrator permission as reorder."""
+    if not is_admin():
+        return json.dumps({"success": False, "error": "Unauthorized"}), 403
+    k = get_karaoke_instance()
+    changed = k.queue_manager.shuffle()
+    return json.dumps(
+        {"success": changed, "message": "已随机打乱待播列表" if changed else "待播歌曲不足两首"}
+    )
