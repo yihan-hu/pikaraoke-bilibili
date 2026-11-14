@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import flask_babel
 from flask import jsonify, render_template, request
 from flask_smorest import Blueprint
@@ -22,13 +24,15 @@ class PreviewQuery(Schema):
 class DownloadBody(Schema):
     song_url = fields.String(required=True, metadata={"description": "YouTube URL to download"})
     song_added_by = fields.String(
-        required=True, metadata={"description": "Name of the user requesting the download"}
+        required=True,
+        metadata={"description": "Name of the user requesting the download"},
     )
     song_title = fields.String(
         required=True, metadata={"description": "Display title for the song"}
     )
     queue = fields.Boolean(
-        load_default=False, metadata={"description": "Whether to queue the song after download"}
+        load_default=False,
+        metadata={"description": "Whether to queue the song after download"},
     )
 
 
@@ -37,13 +41,32 @@ def search():
     """YouTube search page."""
     k = get_karaoke_instance()
     site_name = get_site_name()
+    source = request.args.get("source", "bilibili")
+    if source not in ("youtube", "bilibili"):
+        return jsonify(error="Unsupported source"), 400
     search_string = request.args.get("search_string")
     if search_string:
         non_karaoke = request.args.get("non_karaoke") == "true"
-        if non_karaoke:
-            search_results = get_search_results(search_string)
-        else:
-            search_results = get_search_results(search_string + " karaoke")
+        try:
+            query = (
+                search_string
+                if non_karaoke
+                else search_string + (" 伴奏" if source == "bilibili" else " karaoke")
+            )
+            search_results = get_search_results(query, source=source)
+        except (ValueError, OSError, subprocess.SubprocessError):
+            return (
+                render_template(
+                    "dual_search.html",
+                    source=source,
+                    search_string=search_string,
+                    search_results=None,
+                    title=_("Add New"),
+                    site_title=site_name,
+                    error="搜索失败，请检查网络或登录状态",
+                ),
+                502,
+            )
     else:
         search_string = None
         search_results = None
@@ -55,7 +78,8 @@ def search():
         else {}
     )
     return render_template(
-        "search.html",
+        "search.html" if source == "youtube" else "dual_search.html",
+        source=source,
         site_title=site_name,
         # MSG: Title of the page used to get new songs into the library.
         title=_("Add New"),
@@ -80,12 +104,99 @@ def preview(query):
 def download(form):
     """Download a video from YouTube."""
     k = get_karaoke_instance()
-    song = form["song_url"]
+    from pikaraoke.lib.bilibili import normalize_url
+
+    try:
+        song = normalize_url(form["song_url"])
+        if "/video/av" in song:
+            from pikaraoke.lib.bilibili import details
+            from urllib.parse import parse_qs, urlparse
+
+            number = int(parse_qs(urlparse(song).query).get("p", ["1"])[0])
+            parts = details(song)["parts"]
+            if number > len(parts):
+                raise ValueError("Invalid part")
+            song = parts[number - 1]["url"]
+    except (ValueError, OSError):
+        return jsonify(error="Invalid video URL"), 400
     user = form["song_added_by"]
     title = form["song_title"]
     queue = form.get("queue", False)
+
+    from pikaraoke.lib.bilibili import media_id
+
+    key = media_id(song)
+    if key:
+        path = k.db.get_paths_by_youtube_ids([key]).get(key)
+        if path:
+            if queue:
+                k.queue_manager.enqueue(path, user)
+            return jsonify(status="ok", existing=True)
 
     # Queue the download (processed serially by the download worker)
     k.download_manager.queue_download(song, queue, user, title)
 
     return jsonify({"status": "ok"})
+
+
+@search_bp.route("/video-details")
+def video_details():
+    from pikaraoke.lib.bilibili import details
+
+    try:
+        return jsonify(details(request.args.get("url", "")))
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        return jsonify(error="无法读取分P，请检查链接、网络及 cookies"), 400
+
+
+@search_bp.route("/bilibili-cookies", methods=["GET", "POST", "DELETE"])
+def bilibili_cookies():
+    from pikaraoke.lib.bilibili import cookie_path, save_cookies
+    from pikaraoke.lib.current_app import is_admin
+
+    if not is_admin():
+        return jsonify(error="Administrator required"), 403
+    if request.method != "GET" and request.headers.get("X-Pikaraoke-Settings") != "1":
+        return jsonify(error="Invalid settings request"), 403
+    if request.method == "DELETE":
+        cookie_path().unlink(missing_ok=True)
+    if request.method == "POST":
+        upload = request.files.get("cookies")
+        if not upload:
+            return jsonify(error="Missing cookies file"), 400
+        content = upload.stream.read(1024 * 1024 + 1)
+        if len(content) > 1024 * 1024:
+            return jsonify(error="File too large"), 400
+        try:
+            save_cookies(content.decode("utf-8-sig"))
+        except (ValueError, UnicodeError, OSError):
+            return jsonify(error="无效的 Netscape cookies 文件"), 400
+    return jsonify(configured=cookie_path().exists())
+
+
+@search_bp.route("/bilibili-login-status")
+def bilibili_login_status():
+    import http.cookiejar
+
+    import requests
+
+    from pikaraoke.lib.bilibili import cookie_path
+    from pikaraoke.lib.current_app import is_admin
+
+    if not is_admin():
+        return jsonify(error="Administrator required"), 403
+    if not cookie_path().exists():
+        return jsonify(message="未配置登录信息")
+    jar = http.cookiejar.MozillaCookieJar(str(cookie_path()))
+    try:
+        jar.load(ignore_discard=True, ignore_expires=True)
+        data = requests.get(
+            "https://api.bilibili.com/x/web-interface/nav", cookies=jar, timeout=10
+        ).json()
+        logged_in = bool(data.get("data", {}).get("isLogin"))
+        return jsonify(
+            logged_in=logged_in,
+            message="登录有效" if logged_in else "登录已失效，请重新导入 cookies",
+        )
+    except (OSError, ValueError, requests.RequestException):
+        return jsonify(error="无法检查登录，请检查网络或重新导入 cookies"), 502

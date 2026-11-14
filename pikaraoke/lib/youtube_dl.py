@@ -27,6 +27,8 @@ class SearchResult:
     video_id: str
     channel: str
     duration: str  # formatted M:SS, not seconds
+    thumbnail: str = ""
+    source: str = "youtube"
 
 
 def _js_runtime_args() -> list[str]:
@@ -70,6 +72,10 @@ def get_youtube_id_from_url(url: str) -> str | None:
     Returns:
         The video ID string, or None if parsing failed.
     """
+    from pikaraoke.lib.bilibili import media_id
+
+    if media_id(url):
+        return media_id(url)
     parsed = urlparse(url)
     if parsed.hostname and parsed.hostname.endswith("youtu.be"):
         video_id = parsed.path.lstrip("/").split("/")[0]
@@ -203,11 +209,24 @@ def build_ytdl_download_command(
         cmd += ["--proxy", youtubedl_proxy]
     if additional_args:
         cmd += shlex.split(additional_args)
+    from pikaraoke.lib.bilibili import cookie_args, media_id
+
+    key = media_id(video_url)
+    if key:
+        cmd += cookie_args() + [
+            "--print",
+            "after_move:[pk-file]|%(filepath)s",
+            "--no-playlist",
+            "--merge-output-format",
+            "mp4",
+            "-o",
+            os.path.join(download_path, f"%(title)s---{key}.%(ext)s"),
+        ]
     cmd += [video_url]
     return cmd
 
 
-def get_search_results(query: str) -> list[SearchResult]:
+def get_search_results(query: str, source: str = "youtube") -> list[SearchResult]:
     """Search YouTube for videos matching the query.
 
     Args:
@@ -216,6 +235,22 @@ def get_search_results(query: str) -> list[SearchResult]:
     Returns:
         One SearchResult per hit, in the order yt-dlp reported them.
     """
+    if source == "bilibili":
+        from pikaraoke.lib.bilibili import extract
+
+        info = extract(f"bilisearch10:{query}", flat=True)
+        return [
+            SearchResult(
+                e.get("title", ""),
+                e.get("url") or e.get("webpage_url", ""),
+                e.get("id", ""),
+                e.get("uploader", ""),
+                str(e.get("duration") or ""),
+                e.get("thumbnail") or "",
+                "bilibili",
+            )
+            for e in info.get("entries", [])
+        ]
     logging.info(f"Searching YouTube for: {query}")
     num_results = 10
     yt_search = f'ytsearch{num_results}:"{query}"'

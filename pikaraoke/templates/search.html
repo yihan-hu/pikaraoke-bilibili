@@ -517,7 +517,7 @@
 <p class="subtitle is-6">{% trans %}Add new songs from YouTube{% endtrans %}</p>
 {% endblock %} {% block content %}
 
-<div>
+<div><p class="my-3"><a class="button" href="/search?source=bilibili">Bilibili</a> <span class="button is-info">YouTube</span></p>
 	{% include 'partials/singer_field.html' %}
 	<div class="field">
 		<div id="search-field" class="field has-addons mb-1">
@@ -588,7 +588,7 @@
 
 	<div class="field is-hidden" id="container_search_form">
 		<form action="{{ url_for('search.search') }}" method="get">
-			<input id="search_string" type="text" name="search_string" />
+			<input type="hidden" name="source" value="youtube" /><input id="search_string" type="text" name="search_string" />
 			<input type="text" id="non_karaoke" name="non_karaoke" />
 		</form>
 	</div>

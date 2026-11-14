@@ -1,0 +1,122 @@
+{% extends 'base.html' %}
+{% block header %}<p class="subtitle">Bilibili / YouTube 双平台点歌</p>{% endblock %}
+{% block content %}
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+{% include 'partials/singer_field.html' %}
+<form action="{{ url_for('search.search') }}" method="get" class="box">
+  <label class="label" for="source">视频平台</label>
+  <div class="select"><select id="source" name="source"><option value="bilibili" {% if source == 'bilibili' %}selected{% endif %}>Bilibili</option><option value="youtube" {% if source == 'youtube' %}selected{% endif %}>YouTube</option></select></div>
+  <input class="input mt-3" name="search_string" value="{{ search_string or '' }}" placeholder="搜索歌名、歌手" required>
+  <label class="checkbox my-3"><input type="checkbox" name="non_karaoke" value="true" {% if request.args.get('non_karaoke') == 'true' %}checked{% endif %}> 包含原唱等非伴奏结果</label>
+  <button class="button is-info" type="submit">搜索</button>
+</form>
+<div class="box">
+  <label class="label" for="direct-url">粘贴 Bilibili / YouTube 视频链接</label>
+  <input id="direct-url" class="input" type="url" placeholder="https://www.bilibili.com/video/BV…">
+  <button id="direct-open" class="button mt-2">读取视频 / 选择分P</button>
+</div>
+<p id="status" role="status" class="my-3"></p>
+{% if search_results is not none %}
+{% if not search_results %}<p>没有找到结果。</p>{% endif %}
+{% for result in search_results %}
+<article class="box">
+  <div class="is-flex" style="gap:1rem; flex-wrap:wrap">
+    <img src="{{ result.thumbnail if source == 'bilibili' else 'https://img.youtube.com/vi/' + result.video_id + '/mqdefault.jpg' }}" alt="" referrerpolicy="no-referrer" style="width:160px;max-width:100%;object-fit:contain">
+    <div><strong>{{ result.title }}</strong><p>{{ result.channel }} · {{ result.duration }}</p>
+      <a href="{{ result.url }}" target="_blank" rel="noopener noreferrer">{{ source }} 原站 ↗</a>
+      <button class="button is-info choose-video" data-url="{{ result.url }}" data-title="{{ result.title }}">选择 / 点歌</button>
+    </div>
+  </div>
+</article>
+{% endfor %}
+{% endif %}
+<section id="selection" class="box" hidden>
+  <h2 id="video-title" class="title is-5"></h2>
+  <a id="original-link" target="_blank" rel="noopener noreferrer">打开原站预览 ↗</a>
+  <iframe id="bili-preview" title="Bilibili 视频预览" style="width:100%;height:300px;border:0" allowfullscreen hidden></iframe>
+  <label class="checkbox my-3"><input id="all-parts" type="checkbox"> 全选分P</label>
+  <div id="parts"></div>
+  <button class="button is-info mt-3 submit-parts" data-queue="true">下载并加入队列</button>
+  <button class="button mt-3 submit-parts" data-queue="false">保存到歌库</button>
+</section>
+{% if is_admin() %}
+<details class="box"><summary>B站登录设置（管理员）</summary>
+  <p class="my-3">导入包含 SESSDATA 的 Netscape cookies 文件。凭据仅存本机；失效时请重新导入。画质取决于账号权限和画质设置。</p>
+  <input type="file" id="cookies-file" accept=".txt"><button id="import-cookies" class="button">导入</button>
+  <button id="check-cookies" class="button">检查登录</button><button id="clear-cookies" class="button is-danger">清除</button>
+  <p id="cookie-status" role="status"></p>
+</details>
+{% endif %}
+<p class="is-size-7">基于 <a href="https://github.com/vicwomg/pikaraoke" target="_blank" rel="noopener noreferrer">PiKaraoke — Vic Wong 及贡献者</a>，本项目增加 Bilibili 支持。GPLv3，无担保。<a href="https://github.com/yihan-hu/pikaraoke-bilibili">源码与许可证</a></p>
+{% endblock %}
+{% block scripts %}
+<script>
+$(function () {
+  setUserCookie(); loadSingerList();
+  let entries = [];
+  const status = text => $('#status').text(text);
+  async function jsonRequest(url, options) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '请求失败');
+    return data;
+  }
+  async function selectVideo(url, title) {
+    status('正在读取视频…'); $('#selection').prop('hidden', true); $('#bili-preview').removeAttr('src').prop('hidden', true);
+    try {
+      const parsed = new URL(url);
+      const bili = ['bilibili.com', 'www.bilibili.com', 'm.bilibili.com', 'b23.tv'].includes(parsed.hostname);
+      const data = bili ? await jsonRequest({{ url_for('search.video_details') | tojson }} + '?url=' + encodeURIComponent(url)) : {title: title || url, parts: [{part: 1, title: title || url, url: url}]};
+      entries = data.parts;
+      $('#video-title').text(data.title); $('#original-link').attr('href', entries[0].url);
+      $('#parts').empty(); $('#all-parts').prop('checked', false);
+      const selected = Number(parsed.searchParams.get('p') || 1);
+      entries.forEach((entry, index) => {
+        const label = $('<label class="checkbox is-block my-2">');
+        label.append($('<input type="checkbox" class="part-choice">').val(index).prop('checked', entry.part === selected));
+        label.append(document.createTextNode(' P' + entry.part + ' · ' + entry.title));
+        $('#parts').append(label);
+      });
+      if (bili) {
+        const first = new URL(entries.find(e => e.part === selected)?.url || entries[0].url);
+        $('#bili-preview').attr('src', 'https://player.bilibili.com/player.html?bvid=' + encodeURIComponent(first.pathname.split('/')[2]) + '&page=' + selected + '&autoplay=0').prop('hidden', false);
+      }
+      $('#selection').prop('hidden', false); status('请选择需要的分P。');
+    } catch (error) { status(error.message); }
+  }
+  $('.choose-video').on('click', function () { selectVideo(this.dataset.url, this.dataset.title); });
+  $('#direct-open').on('click', () => selectVideo($('#direct-url').val().trim(), ''));
+  $('#all-parts').on('change', function () { $('.part-choice').prop('checked', this.checked); });
+  $('.submit-parts').on('click', async function () {
+    const choices = $('.part-choice:checked').toArray();
+    if (!choices.length) { status('请至少选择一个分P。'); return; }
+    $('.submit-parts').prop('disabled', true);
+    let accepted = 0;
+    for (const choice of choices) {
+      const entry = entries[Number(choice.value)];
+      try {
+        await jsonRequest({{ url_for('search.download') | tojson }}, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({song_url:entry.url, song_title:entry.title, song_added_by:resolveSinger(), queue:this.dataset.queue === 'true'})});
+        choice.checked = false; accepted++;
+      } catch (error) { status(error.message); }
+    }
+    status('已提交 ' + accepted + ' / ' + choices.length + ' 首。下载进度见队列；未成功提交的分P保持选中。');
+    $('.submit-parts').prop('disabled', false);
+  });
+  async function credentials(method, body) {
+    try {
+      const result = await jsonRequest({{ url_for('search.bilibili_cookies') | tojson }}, {method, body, headers:{'X-Pikaraoke-Settings':'1'}});
+      $('#cookie-status').text(result.message || (result.configured ? '已导入 cookies，点击检查登录验证有效性。' : '未配置登录信息。'));
+    } catch(error) { $('#cookie-status').text(error.message); }
+  }
+  $('#import-cookies').on('click', () => {
+    const file = $('#cookies-file')[0].files[0]; if (!file) return;
+    const data = new FormData(); data.append('cookies', file); credentials('POST', data);
+  });
+  $('#clear-cookies').on('click', () => credentials('DELETE'));
+  $('#check-cookies').on('click', async () => {
+    try { const result = await jsonRequest({{ url_for('search.bilibili_login_status') | tojson }}); $('#cookie-status').text(result.message); }
+    catch(error) { $('#cookie-status').text(error.message); }
+  });
+});
+</script>
+{% endblock %}

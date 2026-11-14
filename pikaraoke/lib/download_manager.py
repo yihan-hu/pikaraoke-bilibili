@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import uuid
 from queue import Queue
@@ -480,7 +481,9 @@ class DownloadManager:
 
             # MSG: Message shown after the download process is completed but the song is not found
             self._events.emit(
-                "notification", _("Error downloading song: ") + displayed_title, "danger"
+                "notification",
+                _("Error downloading song: ") + displayed_title,
+                "danger",
             )
             self.download_errors.append(
                 {
@@ -500,7 +503,9 @@ class DownloadManager:
             if enqueue:
                 # MSG: Message shown after the download is completed and queued
                 self._events.emit(
-                    "notification", _("Downloaded and queued: %s") % displayed_title, "success"
+                    "notification",
+                    _("Downloaded and queued: %s") % displayed_title,
+                    "success",
                 )
             else:
                 # MSG: Message shown after the download is completed but not queued
@@ -515,6 +520,14 @@ class DownloadManager:
             else:
                 logging.warning("No video ID available to find downloaded song")
 
+            if video_id and video_id.startswith("bilibili-"):
+                for line in output.splitlines():
+                    if line.startswith("[pk-file]|"):
+                        candidate = os.path.abspath(line.split("|", 1)[1].strip())
+                        if os.path.commonpath(
+                            [candidate, os.path.abspath(self._download_path)]
+                        ) == os.path.abspath(self._download_path) and os.path.isfile(candidate):
+                            song_path = candidate
             if song_path:
                 self._events.emit("song_downloaded", song_path, video_id)
             else:
@@ -528,7 +541,9 @@ class DownloadManager:
                 else:
                     # MSG: Message shown after the download is completed but the adding to queue fails
                     self._events.emit(
-                        "notification", _("Error queueing song: ") + displayed_title, "danger"
+                        "notification",
+                        _("Error queueing song: ") + displayed_title,
+                        "danger",
                     )
 
         return rc

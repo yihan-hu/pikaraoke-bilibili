@@ -56,7 +56,7 @@ def _search(client, results, library_matches):
         patch("pikaraoke.routes.search.get_site_name", return_value="PiKaraoke"),
         patch("pikaraoke.routes.search.get_search_results", return_value=results),
     ):
-        return client.get("/search?search_string=whatever"), k
+        return client.get("/search?source=youtube&search_string=whatever"), k
 
 
 class TestAcquisitionOnly:
@@ -84,7 +84,7 @@ class TestLibraryMatches:
             patch("pikaraoke.routes.search.get_karaoke_instance") as get_k,
             patch("pikaraoke.routes.search.get_site_name", return_value="PiKaraoke"),
         ):
-            client.get("/search")
+            client.get("/search?source=youtube")
             get_k.return_value.db.get_paths_by_youtube_ids.assert_not_called()
 
     def test_held_song_offers_a_queue_action_instead_of_a_download(self, client):

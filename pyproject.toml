@@ -1,9 +1,9 @@
 [project]
 name = "pikaraoke"
 version = "1.23.0"
-description = "Youtube-based Karaoke machine for Raspberry Pi, OSX, Windows, and Linux"
+description = "Bilibili and YouTube karaoke, based on PiKaraoke by Vic Wong and contributors"
 authors = [{name = "Vic Wong"}]
-readme = "docs/README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["karaoke", "ktv", "video", "audio", "youtube", "raspberry-pi", "osx", "windows", "linux"]
 classifiers = [
@@ -51,8 +51,8 @@ translations = [
 pikaraoke = "pikaraoke.app:main"
 
 [project.urls]
-Homepage = "https://github.com/vicwomg/pikaraoke"
-Repository = "https://github.com/vicwomg/pikaraoke"
+Homepage = "https://github.com/yihan-hu/pikaraoke-bilibili"
+Repository = "https://github.com/yihan-hu/pikaraoke-bilibili"
 
 [build-system]
 requires = ["hatchling"]

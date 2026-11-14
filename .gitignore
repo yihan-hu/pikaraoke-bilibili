@@ -24,3 +24,10 @@ docker-compose.yml
 
 # Script output
 scripts/itunes_report.csv
+
+*bilibili-cookies*
+*cookies*.txt
+*.db
+*.db-wal
+*.db-shm
+*.log

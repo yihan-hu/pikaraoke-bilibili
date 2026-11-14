@@ -854,6 +854,9 @@ def youtube_id_suffix(file_path: str) -> str:
     (without extension) of the basename.
     """
     stem = os.path.splitext(os.path.basename(file_path))[0]
+    match = re.search(r"(---bilibili-BV[0-9A-Za-z]+-p[1-9][0-9]*)$", stem)
+    if match:
+        return match.group(1)
     match = re.search(r"(---[A-Za-z0-9_-]{11})$", stem)
     if match:
         return match.group(1)
