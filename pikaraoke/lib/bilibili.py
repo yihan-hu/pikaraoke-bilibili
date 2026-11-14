@@ -1,11 +1,8 @@
 """Bilibili extraction and local credentials, shared by web and download worker."""
 
 import http.cookiejar
-import json
 import os
 import re
-import subprocess
-import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -129,24 +126,6 @@ def media_id(url: str) -> str | None:
     if parsed.hostname == "www.bilibili.com" and match:
         return f"bilibili-{match[1]}-p{parse_qs(parsed.query).get('p', ['1'])[0]}"
     return None
-
-
-def extract(target: str, flat: bool = False, playlist: bool = False) -> dict:
-    cmd = [
-        sys.executable,
-        "-m",
-        "yt_dlp",
-        "--dump-single-json",
-        "--skip-download",
-        "--yes-playlist" if playlist else "--no-playlist",
-    ]
-    if flat:
-        cmd += ["--flat-playlist"]
-    cmd += cookie_args() + [target]
-    result = subprocess.run(cmd, capture_output=True, timeout=90)
-    if result.returncode:
-        raise ValueError("B站请求失败，请检查网络或重新导入 cookies")
-    return json.loads(result.stdout)
 
 
 def details(url: str) -> dict:

@@ -89,3 +89,18 @@ def test_anonymous_search_cleans_titles_and_needs_no_login():
         results = search_videos("Song")
     assert results[0]["title"] == "Song & Artist"
     assert results[0]["thumbnail"].startswith("https://")
+
+
+@pytest.mark.parametrize("endpoint", ["/bilibili-login/qr", "/bilibili-login/poll"])
+def test_qr_endpoints_require_admin_and_settings_header(endpoint):
+    from tests.conftest import make_route_app
+    from pikaraoke.routes.search import search_bp
+
+    app = make_route_app(search_bp, [])
+    client = app.test_client()
+    with patch("pikaraoke.lib.current_app.is_admin", return_value=False):
+        assert (
+            client.post(endpoint, headers={"X-Pikaraoke-Settings": "1"}, json={}).status_code == 403
+        )
+    with patch("pikaraoke.lib.current_app.is_admin", return_value=True):
+        assert client.post(endpoint, json={}).status_code == 403

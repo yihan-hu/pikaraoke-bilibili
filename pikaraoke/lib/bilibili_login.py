@@ -11,7 +11,7 @@ from pathlib import Path
 import qrcode
 from qrcode.image.pure import PyPNGImage
 
-from pikaraoke.lib.bilibili import cookie_path, save_cookies, web_session
+from pikaraoke.lib.bilibili import save_cookies, web_session
 
 _challenges: dict = {}
 

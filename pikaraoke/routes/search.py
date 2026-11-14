@@ -186,8 +186,6 @@ def bilibili_cookies():
 
 @search_bp.route("/bilibili-login-status")
 def bilibili_login_status():
-    import http.cookiejar
-
     import requests
 
     from pikaraoke.lib.bilibili import cookie_path
