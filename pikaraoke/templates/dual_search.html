@@ -121,7 +121,7 @@ $(function () {
     try {
       const result = await requestSong(songUrl, button.dataset.title || "", true);
       feedback(message, '点歌成功');
-      $(message).attr('title', result.existing ? '已加入播放列表' : '正在下载，完成后自动加入播放列表'); status('');
+      $(message).attr('title', result.online ? '已加入播放列表，本地未就绪时在线播放，后台缓存' : (result.existing ? '已加入播放列表' : '正在下载，完成后自动加入播放列表')); status('');
     } catch(error) { feedback(message, error.message, true); }
     finally { $(button).removeClass('is-loading'); setTimeout(() => $(button).prop('disabled', false), 1000); }
   });

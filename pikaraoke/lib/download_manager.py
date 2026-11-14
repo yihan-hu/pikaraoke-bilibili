@@ -1,16 +1,20 @@
-"""Download queue manager for serialized video downloads."""
+"""Bounded concurrent downloads with isolated progress and ordered playback handoff."""
 
 from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 import uuid
-from queue import Queue
+from collections import deque
 from time import monotonic
 
 import psutil
-from gevent import Greenlet, spawn
+from gevent import Greenlet, joinall, killall, spawn
+from gevent.local import local
+from gevent.queue import JoinableQueue as Queue
 
 from pikaraoke.lib.events import EventSystem
 from pikaraoke.lib.get_platform import is_windows
@@ -112,10 +116,10 @@ def _use_spare_capacity(process: subprocess.Popen) -> None:
 
 
 class DownloadManager:
-    """Manages a queue of video downloads, processing them serially.
+    """Download with bounded concurrency and per-worker progress.
 
-    This prevents rate limiting from download sources and reduces CPU load
-    by ensuring only one download runs at a time.
+    Two workers share the playback-safe process priority while completion
+    handoff preserves request order for download-first sources.
 
     Attributes:
         download_queue: Queue holding pending download requests.
@@ -130,6 +134,7 @@ class DownloadManager:
         download_path: str,
         youtubedl_proxy: str | None = None,
         additional_ytdl_args: str | None = None,
+        max_concurrent_downloads: int = 2,
     ) -> None:
         """Initialize the download manager.
 
@@ -152,9 +157,33 @@ class DownloadManager:
         self.download_queue: Queue = Queue()
         self.pending_downloads: list[dict] = []  # Shadow queue for visibility
         self.download_errors: list[dict] = []  # Track failed downloads
-        self.active_download: dict | None = None
+        self.max_concurrent_downloads = max(1, min(4, max_concurrent_downloads))
+        self._context = local()
+        self._active_downloads: dict[str, dict] = {}
+        self._enqueue_order: deque[str] = deque()
+        self._finished_for_queue: dict = {}
+        self._workers: list[Greenlet] = []
         self._worker: Greenlet | None = None
         self._is_downloading: bool = False  # Track if a download is currently in progress
+
+    @property
+    def active_download(self) -> dict | None:
+        """Worker-local progress; outside a worker, retain the legacy first-active view."""
+        if hasattr(self._context, "active"):
+            return self._context.active
+        return next(iter(self._active_downloads.values()), None)
+
+    @active_download.setter
+    def active_download(self, value: dict | None) -> None:
+        self._context.active = value
+
+    def _supervise_workers(self) -> None:
+        """Keep all workers on one gevent hub and reap them together on shutdown."""
+        self._workers = [spawn(self._process_queue) for _ in range(self.max_concurrent_downloads)]
+        try:
+            joinall(self._workers, raise_error=True)
+        finally:
+            killall(self._workers, block=True)
 
     def start(self) -> None:
         """Start the download worker greenlet.
@@ -164,7 +193,7 @@ class DownloadManager:
         spins up a second hub, which races the main hub at WSGIServer startup and
         can deadlock (observed hanging PiKaraoke launch on macOS).
         """
-        self._worker = spawn(self._process_queue)
+        self._worker = spawn(self._supervise_workers)
         logging.debug("Download queue worker started")
 
     def get_downloads_status(self) -> dict:
@@ -173,24 +202,30 @@ class DownloadManager:
         Returns:
             Dict containing 'active' download info and list of 'pending' downloads.
         """
+        active = [self._active_download_status(state) for state in self._active_downloads.values()]
+        if not active and self.active_download:
+            active = [self._active_download_status()]
         return {
-            "active": self._active_download_status(),
+            "active": active[0] if active else None,
+            "active_downloads": active,
+            "max_concurrent": self.max_concurrent_downloads,
             "pending": self.pending_downloads,
             "errors": self.download_errors,
             "max_attempts": MAX_DOWNLOAD_ATTEMPTS,
         }
 
-    def _active_download_status(self) -> dict | None:
+    def _active_download_status(self, state: dict | None = None) -> dict | None:
         """The active download as the UI reads it, with an expired rate marked stale.
 
         The byte count behind the bar stays true through a silence; the speed and the
         ETA do not, so the panel needs to know which of the two it is holding.
         """
-        if not self.active_download:
+        state = state if state is not None else self.active_download
+        if not state:
             return None
-        printed_at = self.active_download.get("progress_at")
-        active = {key: value for key, value in self.active_download.items() if key != "progress_at"}
-        active["stalled"] = self.active_download["status"] in _RATE_BEARING_STATUSES and (
+        printed_at = state.get("progress_at")
+        active = {key: value for key, value in state.items() if key != "progress_at"}
+        active["stalled"] = state["status"] in _RATE_BEARING_STATUSES and (
             printed_at is None or monotonic() - printed_at > STALE_PROGRESS_SECONDS
         )
         return active
@@ -239,7 +274,7 @@ class DownloadManager:
     ) -> None:
         """Queue a video for download.
 
-        Downloads are processed serially to prevent rate limiting and CPU overload.
+        Up to two downloads run concurrently; additional requests wait.
 
         Args:
             video_url: YouTube video URL.
@@ -253,10 +288,16 @@ class DownloadManager:
         if "&list=" in video_url:
             video_url = video_url.split("&list=")[0]
 
+        if any(item["video_url"] == video_url for item in self.pending_downloads) or any(
+            item["url"] == video_url for item in self._active_downloads.values()
+        ):
+            raise ValueError("此歌曲已在下载列表中")
         displayed_title = title if title else video_url
 
         # Check how many items are ahead (in queue + currently downloading)
-        pending_count = self.download_queue.qsize() + (1 if self._is_downloading else 0)
+        pending_count = self.download_queue.qsize() + (
+            len(self._active_downloads) or int(self._is_downloading)
+        )
 
         if pending_count > 0:
             # MSG: Message shown when download is added to queue (not first in line)
@@ -273,6 +314,7 @@ class DownloadManager:
             self._events.emit("download_started")
 
         download_data = {
+            "id": uuid.uuid4().hex,
             "video_url": video_url,
             "enqueue": enqueue,
             "user": user,
@@ -280,6 +322,9 @@ class DownloadManager:
             "display_title": displayed_title,
             "attempts": 0,
         }
+
+        if enqueue:
+            self._enqueue_order.append(download_data["id"])
 
         # Add to the download queue and shadow list
         self.download_queue.put(download_data)
@@ -294,18 +339,16 @@ class DownloadManager:
         while True:
             download_request = self.download_queue.get()
 
-            # Remove from shadow queue
-            # Note: Since this is a single worker thread and append happens on main thread,
-            # we simply pop the first item as it corresponds to FIFO queue.
-            # In a multi-worker scenario, this would need a lock.
-            if self.pending_downloads:
-                self.pending_downloads.pop(0)
-
+            self.pending_downloads = [
+                item for item in self.pending_downloads if item is not download_request
+            ]
+            job_id = download_request.setdefault("id", uuid.uuid4().hex)
             self._is_downloading = True
 
             # Initialize active download state
             attempts = download_request["attempts"]
             self.active_download = {
+                "id": job_id,
                 "title": download_request.get("display_title", download_request["video_url"]),
                 "url": download_request["video_url"],
                 "user": download_request["user"],
@@ -316,20 +359,51 @@ class DownloadManager:
                 "speed": "---",
             }
 
+            self._active_downloads[job_id] = self.active_download
+
             try:
                 self._execute_download(download_request)
             except Exception as e:
                 logging.error(f"Error processing download: {e}")
+                self._complete_for_queue(download_request, None)
             finally:
-                self._is_downloading = False
+                self._active_downloads.pop(job_id, None)
+                self._is_downloading = bool(self._active_downloads)
                 self.active_download = None
                 self.download_queue.task_done()
 
                 # Check if we are done with all downloads
-                if self.download_queue.empty():
+                if self.download_queue.empty() and not self._active_downloads:
                     self._events.emit("download_stopped")
 
+    def _complete_for_queue(self, request: dict, song_path: str | None) -> None:
+        """Finish in request order even when a later small download completes first."""
+        if not request["enqueue"]:
+            return
+        job_id = request.get("id")
+        if job_id not in self._enqueue_order:
+            if song_path:
+                self._queue_manager.enqueue(song_path, request["user"], log_action=False)
+            return
+        self._finished_for_queue[job_id] = (song_path, request["user"])
+        while self._enqueue_order and self._enqueue_order[0] in self._finished_for_queue:
+            path, user = self._finished_for_queue.pop(self._enqueue_order.popleft())
+            if path:
+                self._queue_manager.enqueue(path, user, log_action=False)
+
     def _run_ytdl(self, cmd: list[str]) -> tuple[int, str]:
+        """Give each concurrent extractor a private cookie snapshot to write back."""
+        if "--cookies" not in cmd:
+            return self._run_ytdl_process(cmd)
+        index = cmd.index("--cookies") + 1
+        with tempfile.TemporaryDirectory(prefix="pikaraoke-download-") as directory:
+            snapshot = os.path.join(directory, "cookies.txt")
+            shutil.copyfile(cmd[index], snapshot)
+            private_cmd = cmd[:]
+            private_cmd[index] = snapshot
+            return self._run_ytdl_process(private_cmd)
+
+    def _run_ytdl_process(self, cmd: list[str]) -> tuple[int, str]:
         """Run yt-dlp to completion, streaming its progress into active_download.
 
         Returns:
@@ -485,6 +559,7 @@ class DownloadManager:
                 _("Error downloading song: ") + displayed_title,
                 "danger",
             )
+            self._complete_for_queue(request, None)
             self.download_errors.append(
                 {
                     "id": str(uuid.uuid4()),
@@ -537,8 +612,9 @@ class DownloadManager:
 
             if enqueue:
                 if song_path:
-                    self._queue_manager.enqueue(song_path, user, log_action=False)
+                    self._complete_for_queue(request, song_path)
                 else:
+                    self._complete_for_queue(request, None)
                     # MSG: Message shown after the download is completed but the adding to queue fails
                     self._events.emit(
                         "notification",

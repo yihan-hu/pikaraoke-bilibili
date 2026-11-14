@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import flask_babel
@@ -135,15 +136,29 @@ def download(form):
     key = media_id(song)
     if key:
         path = k.db.get_paths_by_youtube_ids([key]).get(key)
-        if path:
+        if path and os.path.isfile(path):
             if queue:
                 success, message = k.queue_manager.enqueue(path, user)
                 if not success:
                     return jsonify(error=message), 409
             return jsonify(status="ok", existing=True)
 
-    # Queue the download (processed serially by the download worker)
-    k.download_manager.queue_download(song, queue, user, title)
+    if key and queue:
+        success, message = k.queue_manager.enqueue(song, user, title=title or "B站视频")
+        if not success:
+            return jsonify(error=message), 409
+        try:
+            k.download_manager.queue_download(song, False, user, title)
+        except ValueError:
+            pass  # Already caching this media; the online queue item is still valid.
+        return jsonify(status="ok", online=True, queued=True)
+
+    # Cache files concurrently; legacy YouTube requests enter playback after download.
+
+    try:
+        k.download_manager.queue_download(song, queue, user, title)
+    except ValueError as error:
+        return jsonify(error=str(error)), 409
 
     return jsonify({"status": "ok"})
 
@@ -251,7 +266,9 @@ def bilibili_login_poll():
 def bilibili_preview():
     """Relay a validated Bilibili MP4 with audio, Range and upstream Referer."""
     import re
+
     from flask import Response, stream_with_context
+
     from pikaraoke.lib.bilibili_preview import open_preview
 
     byte_range = request.headers.get("Range")

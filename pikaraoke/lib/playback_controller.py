@@ -115,6 +115,49 @@ class PlaybackController:
 
         self.events.emit("playback_started")
 
+        return self._wait_for_client(result)
+
+    def play_online(self, url: str, user: str, title: str, semitones: int = 0) -> PlaybackResult:
+        """Play an uncached Bilibili item through the local MP4 relay immediately."""
+        from urllib.parse import parse_qs, quote, urlparse
+        from uuid import uuid4
+
+        from pikaraoke.lib.bilibili import details, normalize_url
+        from pikaraoke.lib.bilibili_preview import resolve_preview
+
+        try:
+            url = normalize_url(url)
+            info = details(url)
+            number = int(parse_qs(urlparse(url).query).get("p", ["1"])[0])
+            part = next((part for part in info["parts"] if part["part"] == number), None)
+            if part is None:
+                raise ValueError("分P不存在")
+            resolve_preview(url)
+        except (ValueError, OSError) as error:
+            self.now_playing_filename = None
+            return PlaybackResult(
+                success=False, error=f"在线播放暂时不可用：{error}，后台缓存仍会继续"
+            )
+        self.claim(url)
+        self.now_playing = title or part["title"] or info["title"]
+        self.now_playing_user = user
+        self.now_playing_transpose = 0
+        self.now_playing_duration = part.get("duration")
+        self.now_playing_url = self.stream_manager._with_base_path(
+            f"/bilibili-preview?url={quote(url, safe='')}&instance={uuid4().hex}"
+        )
+        self.now_playing_subtitle_url = None
+        self.is_paused = False
+        if semitones:
+            self.events.emit("notification", "在线歌曲先用原调播放，缓存完成后可以变调", "info")
+        result = PlaybackResult(
+            success=True, stream_url=self.now_playing_url, duration=self.now_playing_duration
+        )
+        self.events.emit("playback_started")
+        return self._wait_for_client(result)
+
+    def _wait_for_client(self, result: PlaybackResult) -> PlaybackResult:
+        """Use the same start/end protocol for local and online media."""
         # Wait for client to connect
         max_retries = 100
         while not self.is_playing and max_retries > 0:

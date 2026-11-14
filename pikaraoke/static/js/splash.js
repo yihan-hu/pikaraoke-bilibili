@@ -277,12 +277,12 @@ const handleNowPlayingUpdate = (np) => {
   if (np.now_playing) {
 
     // Handle updating now playing HTML
-    let nowPlayingHtml = `<span>${np.now_playing}</span> `;
+    let nowPlayingHtml = `<span>${$("<div>").text(np.now_playing).html()}</span> `;
     if (np.now_playing_transpose !== 0) {
       nowPlayingHtml += `<span class='is-size-6 has-text-success'><b>Key</b>: ${getSemitonesLabel(np.now_playing_transpose)} </span>`;
     }
     $("#now-playing-song").html(nowPlayingHtml);
-    $("#now-playing-singer").html(np.now_playing_user);
+    $("#now-playing-singer").text(np.now_playing_user);
     $("#now-playing").fadeIn();
   } else {
     $("#now-playing").fadeOut();
@@ -336,10 +336,13 @@ const handleNowPlayingUpdate = (np) => {
   if (np.now_playing_url && np.now_playing_url !== currentVideoUrl) {
     currentVideoUrl = np.now_playing_url;
     const streamUrl = np.now_playing_url;
+    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+    video.removeAttribute("src");
     $("#video-source").attr("src", "");
     video.load();
     $("#video-source").attr("src", streamUrl);
 
+    if (!streamUrl.endsWith('.m3u8')) video.src = streamUrl;
     if (streamUrl.endsWith('.m3u8')) {
       const useNativeHLS = video.canPlayType('application/vnd.apple.mpegurl') && !isChrome && !isEdge && !isMobileSafari;
       if (useNativeHLS) {

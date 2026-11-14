@@ -36,6 +36,7 @@ from pikaraoke.lib.preference_manager import PreferenceManager
 from pikaraoke.lib.queue_manager import QueueManager
 from pikaraoke.lib.song_manager import SongManager
 from pikaraoke.lib.sound_manager import SoundManager
+from pikaraoke.lib.stream_manager import PlaybackResult
 from pikaraoke.lib.url_prefix import append_base_path_to_url
 from pikaraoke.lib.youtube_dl import get_youtubedl_version, upgrade_youtubedl
 from pikaraoke.version import __version__ as VERSION
@@ -546,6 +547,14 @@ class Karaoke:
         if filename is None or user is None:
             logging.warning("Cannot transpose: no song currently playing")
             return
+        if filename.startswith("https://www.bilibili.com/video/"):
+            from pikaraoke.lib.bilibili import media_id
+
+            local = self.db.get_paths_by_youtube_ids([media_id(filename)]).get(media_id(filename))
+            if not local or not os.path.isfile(local):
+                self.log_and_send("这首歌正在在线播放，缓存完成后可以变调", "info")
+                return
+            filename = local
         # Insert the same song at the top of the queue with transposition.
         # The stream ends but the performance does not, so play history keeps
         # the existing play open rather than logging a second one.
@@ -678,6 +687,31 @@ class Karaoke:
                 namespace="/",
             )
 
+    def _play_queued_song(self, song: dict) -> PlaybackResult:
+        """Choose a complete local cache at playback time, otherwise stream online."""
+        from pikaraoke.lib.bilibili import media_id
+
+        song = dict(song)
+        online_key = media_id(song["file"])
+        if online_key:
+            local = self.db.get_paths_by_youtube_ids([online_key]).get(online_key)
+            if local and os.path.isfile(local):
+                song["file"] = local
+        if online_key and song["file"].startswith("https://"):
+            result = self.playback_controller.play_online(
+                song["file"], song["user"], song["title"], song["semitones"]
+            )
+        else:
+            result = self.playback_controller.play_file(
+                song["file"], song["user"], song["semitones"]
+            )
+        if result.success:
+            song_id, youtube_id = self.db.get_song_identity(song["file"])
+            self.play_history.record_play(
+                song_id, youtube_id or online_key, song["user"], song["title"]
+            )
+        return result
+
     def run(self) -> None:
         """Main run loop - processes queue and plays songs.
 
@@ -713,21 +747,8 @@ class Karaoke:
                             self.playback_controller.claim(song["file"])
                     if not song:
                         continue
-                    result = self.playback_controller.play_file(
-                        song["file"], song["user"], song["semitones"]
-                    )
-
-                    # play_file() blocks only until the client connects, so this
-                    # always lands before the song_ended that completes it.
-                    if result.success:
-                        song_id, youtube_id = self.db.get_song_identity(song["file"])
-                        self.play_history.record_play(
-                            song_id,
-                            youtube_id,
-                            song["user"],
-                            self.song_manager.display_name_from_path(song["file"]),
-                        )
-                    elif result.error:
+                    result = self._play_queued_song(song)
+                    if not result.success and result.error:
                         self.log_and_send(result.error, "danger")
 
                 self.playback_controller.log_output()

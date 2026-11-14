@@ -56,7 +56,7 @@ def test_shuffle_route_requires_admin():
         assert json.loads(response.data)["success"] is True
 
 
-def test_point_song_reports_queue_rejection():
+def test_point_song_reports_queue_rejection(tmp_path):
     from pikaraoke.routes.search import search_bp
 
     app = make_route_app(search_bp, [])
