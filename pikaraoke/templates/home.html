@@ -1,321 +1,392 @@
 {% extends 'base.html' %} {% block scripts %}
 <script>
-	var volume = {{ volume|default(0.85) }};
-
 	// Ensure global socket exists
 	if (typeof window.socket === 'undefined') {
 		window.socket = io({ path: window.pikaraokeConfig.socketioPath });
 	}
 
-	function loadNowPlaying() {
-		console.log("Loading now playing data");
-		$.get('{{ url_for("now_playing.now_playing") }}', function (data) {
-			handleNowPlaying(JSON.parse(data));
-		});
-	}
-
-	function handleNowPlaying(np) {
-		console.log(np);
-		if (np.now_playing) {
-			var nowPlayingHtml = `<p style="margin-bottom: 5px">${np.now_playing}</p>
-          <p class="has-text-success" style="margin-bottom: 5px"><i class="icon icon-mic-1" title="Current singer"></i>${np.now_playing_user}</p>`;
-
-			if (np.now_playing_transpose != 0) {
-				nowPlayingHtml +=
-					// {# MSG: Label for display of how many semitones the song has been shifted. #}
-					"<span class='is-size-6 has-text-success'><b>Key</b>: " +
-					getSemitonesLabel(np.now_playing_transpose) +
-					"<span>";
+	(function () {
+		// SPA navigation re-runs this script on every visit, so anything that
+		// outlives the page (timers, socket handlers) is torn down first.
+		var prev = window.mkHome;
+		if (prev) {
+			clearInterval(prev.timer);
+			if (window.socket) {
+				window.socket.off("now_playing", prev.onNowPlaying);
+				window.socket.off("playback_position", prev.onPosition);
+				window.socket.off("seek", prev.onPosition);
 			}
-
-			$("#now-playing").html(nowPlayingHtml);
-			$(".control-box").show();
-		} else {
-			// {# MSG: Message which shows in the "Now Playing" section when there is no song currently playing #}
-			$("#now-playing").html({{ _('Nothing is playing right now.') | tojson }});
-			$(".control-box").hide();
 		}
 
-		if (np.up_next) {
-			$("#up-next").html(`<p style="margin-bottom: 5px">${np.up_next}</p>
-          <p class="has-text-success">
-            {# MSG: Title text for the icon marking the next person to sing. #}
-            <i class="icon icon-mic-1" title="{{ _('Next singer') | forceescape }}"></i>${np.next_user}</p>`);
-		} else {
-			// {# MSG: Alternative text for the "Up next" section if no more songs are queued up. #}
-			$("#up-next").html({{ _('No song is queued.') | tojson }});
+		var canSeek = {{ 'true' if admin else 'false' }};
+		var player = {
+			hasSong: false,
+			url: null,
+			paused: false,
+			buffering: false,
+			duration: 0,
+			pos: 0,
+			posAt: performance.now(),
+			seeking: false,
+			volume: {{ volume|default(0.85) }}
+		};
+		var home = (window.mkHome = { player: player });
+
+		function formatTime(seconds) {
+			seconds = Math.max(0, Math.floor(Number(seconds) || 0));
+			var h = Math.floor(seconds / 3600);
+			var m = Math.floor((seconds % 3600) / 60);
+			var s = String(seconds % 60).padStart(2, "0");
+			return h ? h + ":" + String(m).padStart(2, "0") + ":" + s : m + ":" + s;
 		}
 
-		if (np.now_playing_transpose != 0) {
-			$("#transpose").val(np.now_playing_transpose);
-			$("#semitones-label").html(getSemitonesLabel(np.now_playing_transpose));
-		} else {
-			$("#transpose").val(0);
-			$("#semitones-label").html(getSemitonesLabel(np.now_playing_transpose));
+		function livePosition() {
+			if (!player.hasSong) return 0;
+			var p = player.pos;
+			if (!player.paused && !player.buffering) p += (performance.now() - player.posAt) / 1000;
+			return player.duration ? Math.min(p, player.duration) : p;
 		}
 
-		// set the volume slider to the current volume
-		if (np.volume != volume) {
-			volume = np.volume;
-			console.log("setting volume to " + volume);
-			$("#volume-slider").val(volume);
+		function setPosition(position) {
+			var p = Number(position);
+			if (!Number.isFinite(p) || p < 0) return;
+			player.pos = p;
+			player.posAt = performance.now();
 		}
 
-		if (np.is_paused) {
-			$("#pause-resume").removeClass("icon-pause");
-			$("#pause-resume").addClass("icon-play");
-			$(".playing_gif").attr("src", "{{  url_for('static', filename='images/now-playing.png') }}");
-		} else {
-			$("#pause-resume").removeClass("icon-play");
-			$("#pause-resume").addClass("icon-pause");
-			$(".playing_gif").attr("src", "{{  url_for('static', filename='images/now-playing.gif') }}");
+		function renderProgress() {
+			var slider = document.getElementById("seek-slider");
+			if (!slider) return;
+			var duration = player.duration || 0;
+			slider.max = duration || 1;
+			slider.disabled = !player.hasSong || !duration || !canSeek;
+			if (!player.seeking) {
+				slider.value = player.hasSong ? livePosition() : 0;
+				$("#seek-elapsed").text(formatTime(slider.value)).removeClass("is-seeking");
+			}
+			$("#seek-duration").text(duration ? formatTime(duration) : "--:--");
+			window.mkPaintRange && window.mkPaintRange(slider);
 		}
-	}
+		home.render = renderProgress;
 
-	$(function () {
-		$(".control-box").hide();
-
-		var slider = document.getElementById("transpose");
-		var output = document.getElementById("semitones-label");
-		if (slider && output) {
-			output.innerHTML = getSemitonesLabel(slider.value);
-			// Update the current slider value (each time you drag the slider handle)
-			slider.oninput = function () {
-				output.innerHTML = getSemitonesLabel(slider.value);
-			};
-		}
-
-		$("#volume-slider").on(
-			"input",
-			debounce(function (event) {
-				const value = this.value;
-				$.post(window.pikaraokeConfig.basePath + "/volume/" + value);
-			}, 500)
-		);
-
-		$("#submit-transpose").click(function () {
-			var value;
-			if (slider) {
-				value = slider.value;
+		function setState(np) {
+			var $state = $("#np-state").removeClass("is-paused is-buffering");
+			if (!np.now_playing) {
+				$state.text("空闲中");
+			} else if (np.is_buffering) {
+				$state.addClass("is-buffering").text("缓冲中");
+			} else if (np.is_paused) {
+				$state.addClass("is-paused").text("已暂停");
 			} else {
-				value = 0;
-			}
-			r = confirm(window.translations.confirmTranspose.replace("{label}", getSemitonesLabel(value)));
-			if (r) {
-				$.post(window.pikaraokeConfig.basePath + "/transpose/" + value);
-			}
-			slider.value = 0;
-			output.innerHTML = getSemitonesLabel(slider.value);
-		});
-
-		$("#pause-resume").click(function () {
-			$.post(window.pikaraokeConfig.basePath + "/pause");
-			togglePausePlayButton();
-		});
-
-		$("#vol-up").click(function () {
-			$.post(window.pikaraokeConfig.basePath + "/vol_up");
-		});
-
-		$("#vol-down").click(function () {
-			$.post(window.pikaraokeConfig.basePath + "/vol_down");
-		});
-
-		$("#restart").click(function () {
-			r = confirm(window.translations.confirmRestartTrack);
-			if (r) {
-				$.post(window.pikaraokeConfig.basePath + "/restart");
-			}
-		});
-
-		$("#skip").click(function () {
-			r = confirm(
-				// {# MSG: Confirmation message when clicking a button to skip a track. #}
-				{{ _("Are you sure you want to skip this track? If you didn't add this song, ask permission first!") | tojson }}
-			);
-			if (r) {
-				$.post(window.pikaraokeConfig.basePath + "/skip");
-			}
-		});
-
-		$("#semitones-info").click(function () {
-			showNotification(
-				window.translations.semitonesInfo,
-				"is-info",
-				10000
-			);
-		});
-
-		function togglePausePlayButton() {
-			if ($("#pause-resume").hasClass("icon-pause")) {
-				$("#pause-resume").removeClass("icon-pause");
-				$("#pause-resume").addClass("icon-play");
-			} else {
-				$("#pause-resume").removeClass("icon-play");
-				$("#pause-resume").addClass("icon-pause");
+				$state.text("播放中");
 			}
 		}
 
-		//for first time load of splash screen
-		loadNowPlaying();
-		//for pushed updates to now playing state
-		window.socket.on("now_playing", (np) => handleNowPlaying(np));
+		function handleNowPlaying(np) {
+			var hasSong = Boolean(np.now_playing);
+			var $card = $("#np-card").toggleClass("has-song", hasSong);
+			$card.toggleClass("is-playing", hasSong && !np.is_paused && !np.is_buffering);
+			setState(np);
 
-		document.addEventListener("visibilitychange", function () {
-			console.log("on visibility change");
-
-			if (document.visibilityState === "visible") {
-				loadNowPlaying();
-				console.log(window.socket);
-				if (!window.socket.connected) {
-					console.log("Reconnecting socket...");
-					window.socket = io({ path: window.pikaraokeConfig.socketioPath });
-					window.socket.on("now_playing", (np) => handleNowPlaying(np));
+			if (hasSong) {
+				$("#now-playing").text(np.now_playing);
+				$("#np-singer").show().find("span").text(np.now_playing_user || "");
+				if (np.now_playing_transpose) {
+					$("#np-key").show().find("span").text(getSemitonesLabel(np.now_playing_transpose));
+				} else {
+					$("#np-key").hide();
 				}
+				$(".control-box").show();
+			} else {
+				// {# MSG: Message which shows in the "Now Playing" section when there is no song currently playing #}
+				$("#now-playing").text({{ _('Nothing is playing right now.') | tojson }});
+				$("#np-singer, #np-key").hide();
+				$(".control-box").hide();
 			}
-		});
 
-		{% if admin and mic_available %}
-		// Mic volume controls (live adjustment for enabled mics)
-		window.socket.on("mic_devices_state", function(devices) {
-			var enabled = devices.filter(function(d) { return d.enabled; });
-			if (enabled.length === 0) {
-				$("#mic-live-panel").hide();
-				return;
+			if (np.now_playing_url !== player.url) {
+				player.url = np.now_playing_url;
+				setPosition(np.resume_position != null ? np.resume_position : np.now_playing_position || 0);
+			} else if (np.now_playing_position != null && np.is_paused !== player.paused) {
+				setPosition(livePosition());
 			}
-			var list = $("#mic-live-list");
-			list.empty();
-			enabled.forEach(function(dev) {
-				var escaped = $('<span>').text(dev.label).html();
-				list.append(
-					'<div class="is-flex mb-1" style="align-items: center;">' +
-						'<i class="icon icon-mic-1 mr-1"></i>' +
-						'<span class="is-size-7 mr-2" style="min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escaped + '</span>' +
-						'<input type="range" min="0" max="1" step="0.05" value="' + dev.volume + '" ' +
-							'class="mic-live-volume" data-device-id="' + dev.deviceId + '" data-label="' + escaped + '" ' +
-							'style="width: 100px;" />' +
-					'</div>'
-				);
+			player.hasSong = hasSong;
+			player.paused = Boolean(np.is_paused);
+			player.buffering = Boolean(np.is_buffering);
+			player.duration = Number(np.now_playing_duration) || 0;
+			renderProgress();
+
+			if (np.up_next) {
+				$("#up-next").text(np.up_next);
+				$("#up-next-user").show().find("span").text(np.next_user || "");
+			} else {
+				// {# MSG: Alternative text for the "Up next" section if no more songs are queued up. #}
+				$("#up-next").text({{ _('No song is queued.') | tojson }});
+				$("#up-next-user").hide();
+			}
+
+			$("#transpose").val(np.now_playing_transpose || 0);
+			$("#semitones-label").text(getSemitonesLabel(np.now_playing_transpose || 0));
+
+			if (np.volume != null && np.volume != player.volume) {
+				player.volume = np.volume;
+				$("#volume-slider").val(player.volume);
+			}
+
+			var paused = Boolean(np.is_paused);
+			$("#pause-resume").toggleClass("icon-play", paused).toggleClass("icon-pause", !paused);
+			$(".mk-range-paint").each(function () { window.mkPaintRange && window.mkPaintRange(this); });
+		}
+
+		function loadNowPlaying() {
+			$.get('{{ url_for("now_playing.now_playing") }}', function (data) {
+				handleNowPlaying(JSON.parse(data));
 			});
-			$("#mic-live-panel").show();
-		});
+		}
 
-		window.socket.on("mic_update", function(data) {
-			if (!data.enabled) {
-				$(".mic-live-volume").filter(function() {
-					return $(this).data("device-id") === data.deviceId;
-				}).closest("div").remove();
-				if ($("#mic-live-list").children().length === 0) {
-					$("#mic-live-panel").hide();
+		home.onNowPlaying = handleNowPlaying;
+		home.onPosition = function (position) {
+			if (!player.seeking) {
+				setPosition(position);
+				renderProgress();
+			}
+		};
+		home.timer = setInterval(renderProgress, 250);
+
+		$(function () {
+			$(".control-box").hide();
+
+			$("#seek-slider")
+				.on("input", function () {
+					player.seeking = true;
+					$("#seek-elapsed").text(formatTime(this.value)).addClass("is-seeking");
+					window.mkPaintRange && window.mkPaintRange(this);
+				})
+				.on("change", function () {
+					var target = Number(this.value);
+					setPosition(target);
+					player.seeking = false;
+					renderProgress();
+					$.post(window.pikaraokeConfig.basePath + "/seek/" + target.toFixed(2));
+				});
+
+			$("#seek-back, #seek-fwd").on("click", function () {
+				if (!player.hasSong) return;
+				var delta = this.id === "seek-back" ? -10 : 10;
+				var target = Math.max(0, livePosition() + delta);
+				if (player.duration) target = Math.min(target, player.duration - 1);
+				setPosition(target);
+				renderProgress();
+				$.post(window.pikaraokeConfig.basePath + "/seek/" + target.toFixed(2));
+			});
+
+			var slider = document.getElementById("transpose");
+			var output = document.getElementById("semitones-label");
+			if (slider && output) {
+				output.innerHTML = getSemitonesLabel(slider.value);
+				slider.oninput = function () {
+					output.innerHTML = getSemitonesLabel(slider.value);
+				};
+			}
+
+			$("#volume-slider").on(
+				"input",
+				debounce(function () {
+					$.post(window.pikaraokeConfig.basePath + "/volume/" + this.value);
+				}, 300)
+			);
+
+			$("#submit-transpose").click(function () {
+				var value = slider ? slider.value : 0;
+				var r = confirm(window.translations.confirmTranspose.replace("{label}", getSemitonesLabel(value)));
+				if (r) {
+					$.post(window.pikaraokeConfig.basePath + "/transpose/" + value);
 				}
-			} else {
+				slider.value = 0;
+				output.innerHTML = getSemitonesLabel(slider.value);
+			});
+
+			$("#pause-resume-btn").click(function () {
+				$.post(window.pikaraokeConfig.basePath + "/pause");
+				$("#pause-resume").toggleClass("icon-pause icon-play");
+			});
+
+			$("#vol-up").click(function () {
+				$.post(window.pikaraokeConfig.basePath + "/vol_up");
+			});
+
+			$("#vol-down").click(function () {
+				$.post(window.pikaraokeConfig.basePath + "/vol_down");
+			});
+
+			$("#restart").click(function () {
+				if (confirm(window.translations.confirmRestartTrack)) {
+					$.post(window.pikaraokeConfig.basePath + "/restart");
+				}
+			});
+
+			$("#skip").click(function () {
+				var r = confirm(
+					// {# MSG: Confirmation message when clicking a button to skip a track. #}
+					{{ _("Are you sure you want to skip this track? If you didn't add this song, ask permission first!") | tojson }}
+				);
+				if (r) {
+					$.post(window.pikaraokeConfig.basePath + "/skip");
+				}
+			});
+
+			$("#semitones-info").click(function () {
+				showNotification(window.translations.semitonesInfo, "is-info", 10000);
+			});
+
+			loadNowPlaying();
+			window.socket.on("now_playing", home.onNowPlaying);
+			window.socket.on("playback_position", home.onPosition);
+			window.socket.on("seek", home.onPosition);
+
+			$(document).off("visibilitychange.mkHome").on("visibilitychange.mkHome", function () {
+				if (document.visibilityState === "visible" && window.mkHome === home) {
+					loadNowPlaying();
+				}
+			});
+
+			{% if admin and mic_available %}
+			// Mic volume controls (live adjustment for enabled mics)
+			window.socket.off("mic_devices_state").on("mic_devices_state", function(devices) {
+				var enabled = devices.filter(function(d) { return d.enabled; });
+				if (enabled.length === 0) {
+					$("#mic-live-panel").hide();
+					return;
+				}
+				var list = $("#mic-live-list");
+				list.empty();
+				enabled.forEach(function(dev) {
+					var escaped = $('<span>').text(dev.label).html();
+					list.append(
+						'<div class="mk-row mb-2">' +
+							'<i class="icon icon-mic-1"></i>' +
+							'<span class="is-size-7" style="width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escaped + '</span>' +
+							'<input type="range" min="0" max="1" step="0.05" value="' + dev.volume + '" ' +
+								'class="mic-live-volume mk-range-paint" data-device-id="' + dev.deviceId + '" data-label="' + escaped + '" />' +
+						'</div>'
+					);
+				});
+				$("#mic-live-panel").show();
+			});
+
+			window.socket.off("mic_update").on("mic_update", function(data) {
 				var slider = $(".mic-live-volume").filter(function() {
 					return $(this).data("device-id") === data.deviceId;
 				});
-				if (slider.length) slider.val(data.volume);
-			}
-		});
-
-		$(document).on("input", ".mic-live-volume", debounce(function() {
-			var deviceId = $(this).data("device-id");
-			var label = $(this).data("label");
-			var volume = parseFloat($(this).val());
-			window.socket.emit("mic_update", {
-				deviceId: deviceId, label: label, enabled: true, volume: volume
+				if (!data.enabled) {
+					slider.closest("div").remove();
+					if ($("#mic-live-list").children().length === 0) {
+						$("#mic-live-panel").hide();
+					}
+				} else if (slider.length) {
+					slider.val(data.volume);
+				}
 			});
-		}, 300));
 
-		// Request mic state on load
-		window.socket.emit("request_mic_devices");
-		{% endif %}
-	});
+			$(document).off("input.mkMic").on("input.mkMic", ".mic-live-volume", debounce(function() {
+				window.socket.emit("mic_update", {
+					deviceId: $(this).data("device-id"),
+					label: $(this).data("label"),
+					enabled: true,
+					volume: parseFloat($(this).val())
+				});
+			}, 300));
+
+			window.socket.emit("request_mic_devices");
+			{% endif %}
+		});
+	})();
 </script>
-{% endblock %} {% block heading %}{{ title }}
-<img
-	style="display: none"
-	class="playing_gif control-box"
-	width="40"
-	src="{{  url_for('static', filename='images/now-playing.png') }}"
-/>{% endblock %}
+{% endblock %} {% block heading %}{% endblock %}
 
 {% block content %}
-
-<p class="is-size-4 has-text-warning" id="now-playing">&nbsp;</p>
-
-<hr />
-<h3>{# MSG: Title for the section displaying the next song to be played. #} {% trans %}Next Song{% endtrans %}</h3>
-<p id="up-next" class="has-text-warning"></p>
-<hr />
-
-{% if admin %}
-<div class="has-background-black-bis box control-box" style="max-width: 500px; display: none">
-	{# MSG: Title of the box with controls such as pause and skip. #}
-	<h4>{% trans %}Player Control{% endtrans %}</h4>
-	<div class="is-size-3" style="display: flex; justify-content: space-between">
-		<div class="is-size-3">
-			{# MSG: Title attribute on the button to restart the current song. #}
-			<a title="{{ _('Restart Song') }}" id="restart"><i class="icon icon-to-start"></i> </a>&nbsp;&nbsp; {# MSG:
-			Title attribute on the button to play or pause the current song. #}
-			<a title="{{ _('Play/Pause') }}"><i id="pause-resume" class="icon icon-pause"></i> </a>&nbsp;&nbsp; {# MSG:
-			Title attribute on the button to skip to the next song. #}
-			<a title="{{ _('Stop Current Song') }}" id="skip"><i class="icon icon-to-end"></i> </a>
+<div class="mk-home-grid">
+	<section class="mk-np" id="np-card" aria-live="polite">
+		<div class="mk-np-top">
+			<div class="mk-np-art" aria-hidden="true">
+				<img src="{{ url_for('static', filename='images/maokaraoke-icon.png') }}" alt="">
+				<span class="mk-eq"><i></i><i></i><i></i></span>
+			</div>
+			<div class="mk-np-meta">
+				<div class="mk-kicker">正在播放 <span class="mk-state" id="np-state">空闲中</span></div>
+				<p class="mk-np-title" id="now-playing">&nbsp;</p>
+				<div class="mk-np-sub">
+					<span class="mk-chip is-singer" id="np-singer" style="display: none"><i class="icon icon-mic-1" title="Current singer"></i><span></span></span>
+					<span class="mk-chip is-key" id="np-key" style="display: none"><b>Key</b>&nbsp;<span></span></span>
+				</div>
+			</div>
 		</div>
-		<div class="is-size-3" style="display: flex; align-items: center">
-			<i id="vol-down" class="icon icon-volume-down"></i>
-			<input
-				type="range"
-				min="0"
-				max="1"
-				value="{{ volume|default(0.85) }}"
-				step="0.025"
-				id="volume-slider"
-				style="margin: 0 8px 0px 5px; width: 100px"
-			/>
-			<i id="vol-up" class="icon icon-volume-up"></i>
-		</div>
-	</div>
-	<hr />
 
-	{% if is_transpose_enabled %}
-	<div class="is-flex" style="justify-content: space-between">
-		<div>
-			{# MSG: Title of a control to change the key/pitch of the playing song. #}
-			<h4>{% trans %}Change Key{% endtrans %}</h4>
+		<div class="mk-progress control-box{% if not admin %} is-readonly{% endif %}" style="display: none">
+			<input type="range" id="seek-slider" min="0" max="1" step="0.1" value="0"
+				aria-label="歌曲进度" {% if not admin %}tabindex="-1"{% endif %} />
+			<div class="mk-time"><span id="seek-elapsed">0:00</span><span id="seek-duration">--:--</span></div>
 		</div>
-		<div class="is-flex">
-			<h4 id="semitones-label"></h4>
-			<a id="semitones-info"> <i class="icon icon-info-circled-1" title="Info"></i></a>
-		</div>
-	</div>
-	<div style="width: 100%">
-		<div class="is-flex">
-			<input
-				type="range"
-				min="-12"
-				max="12"
-				value="0"
-				width="300px"
-				class="transpose-slider"
-				id="transpose"
-				style="width: 100%"
-			/>
-			<button id="submit-transpose" class="button is-rounded is-small" style="margin-left: 10px">
-				{# MSG: Label on the button to confirm the change in key/pitch of the playing song. #} {% trans %}Change{%
-				endtrans %}
-			</button>
-		</div>
-	</div>
-	{% endif %}
 
-	{% if mic_available %}
-	<div id="mic-live-panel" style="display: none">
-		<hr />
-		<h4><i class="icon icon-mic-1"></i> {% trans %}Microphones{% endtrans %}</h4>
-		<div id="mic-live-list"></div>
-	</div>
-	{% endif %}
+		{% if admin %}
+		<div class="control-box" style="display: none">
+			{# MSG: Title of the box with controls such as pause and skip. #}
+			<h4 class="is-sr-only">{% trans %}Player Control{% endtrans %}</h4>
+			<div class="mk-transport">
+				{# MSG: Title attribute on the button to restart the current song. #}
+				<button type="button" class="mk-icon-btn is-small" title="{{ _('Restart Song') }}" id="restart"><i class="icon icon-to-start"></i></button>
+				<button type="button" class="mk-icon-btn" title="-10s" id="seek-back"><b class="is-size-7">-10</b></button>
+				{# MSG: Title attribute on the button to play or pause the current song. #}
+				<button type="button" class="mk-icon-btn is-main" title="{{ _('Play/Pause') }}" id="pause-resume-btn"><i id="pause-resume" class="icon icon-pause"></i></button>
+				<button type="button" class="mk-icon-btn" title="+10s" id="seek-fwd"><b class="is-size-7">+10</b></button>
+				{# MSG: Title attribute on the button to skip to the next song. #}
+				<button type="button" class="mk-icon-btn is-small" title="{{ _('Stop Current Song') }}" id="skip"><i class="icon icon-to-end"></i></button>
+			</div>
+
+			<div class="mk-volume">
+				<button type="button" class="mk-icon-btn is-small" id="vol-down" aria-label="vol down"><i class="icon icon-volume-down"></i></button>
+				<input type="range" min="0" max="1" value="{{ volume|default(0.85) }}" step="0.025" id="volume-slider" class="mk-range-paint" aria-label="volume" />
+				<button type="button" class="mk-icon-btn is-small" id="vol-up" aria-label="vol up"><i class="icon icon-volume-up"></i></button>
+			</div>
+
+			{% if is_transpose_enabled %}
+			<div class="mk-panel">
+				<div class="mk-panel-head">
+					{# MSG: Title of a control to change the key/pitch of the playing song. #}
+					<span>{% trans %}Change Key{% endtrans %}</span>
+					<span class="mk-row"><small id="semitones-label"></small><a id="semitones-info"><i class="icon icon-info-circled-1" title="Info"></i></a></span>
+				</div>
+				<div class="mk-row">
+					<input type="range" min="-12" max="12" value="0" class="transpose-slider mk-range-paint" id="transpose" aria-label="key" />
+					<button id="submit-transpose" class="button is-rounded is-small">
+						{# MSG: Label on the button to confirm the change in key/pitch of the playing song. #} {% trans %}Change{% endtrans %}
+					</button>
+				</div>
+			</div>
+			{% endif %}
+
+			{% if mic_available %}
+			<div id="mic-live-panel" class="mk-panel" style="display: none">
+				<div class="mk-panel-head"><span><i class="icon icon-mic-1"></i> {% trans %}Microphones{% endtrans %}</span></div>
+				<div id="mic-live-list"></div>
+			</div>
+			{% endif %}
+		</div>
+		{% endif %}
+	</section>
+
+	<a class="mk-next" href="{{ url_for('queue.queue') }}">
+		<span class="mk-next-badge"><i class="icon icon-list-numbered"></i></span>
+		<span class="mk-next-body">
+			{# MSG: Title for the section displaying the next song to be played. #}
+			<span class="mk-kicker">{% trans %}Next Song{% endtrans %}</span>
+			<p class="mk-next-title" id="up-next"></p>
+			{# MSG: Title text for the icon marking the next person to sing. #}
+			<p class="is-size-7" id="up-next-user" style="display: none"><i class="icon icon-mic-1" title="{{ _('Next singer') | forceescape }}"></i><span></span></p>
+		</span>
+		<i class="icon icon-angle-right mk-next-arrow" aria-hidden="true"></i>
+	</a>
+
+	{% include 'partials/room_controls.html' %}
 </div>
-{% endif %}
-
-<div></div>
 {% endblock %}

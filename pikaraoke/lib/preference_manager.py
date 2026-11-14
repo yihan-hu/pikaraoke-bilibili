@@ -36,7 +36,7 @@ class PreferenceManager:
         "disable_bg_music": False,
         "bg_music_volume": 0.3,
         "disable_bg_video": False,
-        "disable_score": False,
+        "disable_score": True,
         "limit_user_songs_by": 0,
         "enable_fair_queue": False,
         "cdg_pixel_scaling": False,

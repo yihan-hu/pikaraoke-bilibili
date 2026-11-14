@@ -1,0 +1,64 @@
+<section class="box mk-room" id="room-controls">
+  <ul class="mk-room-tabs" role="tablist">
+    <li><button type="button" role="tab" id="room-tab-danmaku" aria-controls="room-pane-danmaku" aria-selected="true">💬 弹幕</button></li>
+    {% if admin %}
+    <li><button type="button" role="tab" id="room-tab-lyrics" aria-controls="room-pane-lyrics" aria-selected="false">🎵 歌词</button></li>
+    {% endif %}
+  </ul>
+
+  <div class="mk-room-pane" id="room-pane-danmaku" role="tabpanel" aria-labelledby="room-tab-danmaku">
+    <label class="label" for="danmaku-text">发送弹幕</label>
+    <div class="mk-danmaku-row">
+      <textarea id="danmaku-text" class="textarea" rows="2" maxlength="80" placeholder="给台上的歌手打个气吧（最多80字）"></textarea>
+      <button id="danmaku-send" class="button is-info">发送</button>
+    </div>
+    <p class="help">弹幕大字显示，第二行署名为你当前的点歌名字。按 Ctrl/⌘ + Enter 快速发送。</p>
+    {% if admin %}
+    <div class="mk-row mt-3">
+      <label class="checkbox"><input id="danmaku-enabled" type="checkbox" checked> 允许弹幕</label>
+      <button id="danmaku-clear" class="button is-small is-light ml-auto">清屏</button>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if admin %}
+  <div class="mk-room-pane" id="room-pane-lyrics" role="tabpanel" aria-labelledby="room-tab-lyrics" hidden>
+    <label class="label" for="lyrics-query">搜索歌词（歌名 / 歌手）</label>
+    <div class="field has-addons">
+      <div class="control is-expanded"><input id="lyrics-query" class="input" placeholder="歌名 + 歌手"></div>
+      <div class="control"><button class="button is-info" id="lyrics-search">搜索</button></div>
+    </div>
+    <div id="lyrics-results"></div>
+    <p id="lyrics-selected" class="help mb-3">为当前歌曲选择歌词，换歌后不会显示上一首的歌词。</p>
+
+    <div class="mk-row" style="flex-wrap: wrap">
+      <label class="checkbox"><input type="checkbox" id="lyrics-visible"> 显示歌词</label>
+      <div class="select is-small"><select id="lyrics-mode" aria-label="歌词显示模式"><option value="synced">同步歌词</option><option value="plain">全文歌词（整首）</option></select></div>
+      <div class="select is-small"><select id="lyrics-position" aria-label="歌词位置"><option value="bottom">下方</option><option value="top">上移</option></select></div>
+    </div>
+
+    <div class="mk-panel">
+      <div class="mk-panel-head">
+        <label for="lyrics-offset-range">同步校准</label>
+        <small id="lyrics-offset-label">0.0 秒</small>
+      </div>
+      <div class="mk-row">
+        <button type="button" class="mk-icon-btn is-small lyrics-offset-step" data-step="-0.1" aria-label="延后0.1秒">−</button>
+        <input type="range" id="lyrics-offset-range" class="mk-range-paint mk-range-center" min="-5" max="5" step="0.1" value="0" aria-describedby="lyrics-offset-help">
+        <button type="button" class="mk-icon-btn is-small lyrics-offset-step" data-step="0.1" aria-label="提前0.1秒">+</button>
+      </div>
+      <div class="mk-offset-scale" aria-hidden="true"><span>-5s 延后</span><span>0</span><span>提前 +5s</span></div>
+      <div class="mk-row mt-2">
+        <input id="lyrics-offset" class="input is-small mk-offset-value" type="number" min="-120" max="120" step="0.1" value="0" aria-label="校准秒数">
+        <span class="help m-0">秒，可直接输入（超出 ±5 秒也可以）</span>
+        <button type="button" class="button is-small is-light ml-auto" id="lyrics-offset-reset">归零</button>
+      </div>
+      <p class="help" id="lyrics-offset-help">歌词比演唱慢就往“提前”拖，快了就往“延后”拖，拖动时大屏实时生效。</p>
+    </div>
+
+    <details class="mt-3"><summary>找不到歌词时，粘贴普通歌词或 LRC</summary><textarea id="lyrics-manual" class="textarea mt-2" maxlength="50000" placeholder="粘贴完整歌词，或带时间戳的LRC"></textarea><button class="button mt-2" id="lyrics-apply-manual">用于当前歌曲</button></details>
+  </div>
+  {% endif %}
+  <p id="room-control-status" class="help px-4 pb-3 m-0" role="status"></p>
+</section>
+<script src="{{ url_for('static', filename='js/room-controls.js') }}?v=2"></script>

@@ -275,7 +275,11 @@ def bilibili_preview():
     if byte_range and not re.fullmatch(r"bytes=(?:[0-9]+-[0-9]*|-[0-9]+)", byte_range):
         return jsonify(error="Invalid byte range"), 400
     try:
-        upstream = open_preview(request.args.get("url", ""), byte_range)
+        generation = request.args.get("retry", "")[:40]
+        if generation:
+            upstream = open_preview(request.args.get("url", ""), byte_range, generation)
+        else:
+            upstream = open_preview(request.args.get("url", ""), byte_range)
     except (OSError, ValueError):
         return jsonify(error="预览暂时不可用，请重试或打开原站"), 502
 

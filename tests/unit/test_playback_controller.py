@@ -101,8 +101,10 @@ class TestPlaybackControllerPlayFile:
     @patch("pikaraoke.lib.playback_controller.os.path.isfile", return_value=True)
     @patch("pikaraoke.lib.playback_controller.time.sleep")
     @patch("flask_babel._", side_effect=lambda x: x)
-    def test_play_file_timeout(self, mock_gettext, mock_sleep, mock_isfile, test_prefs):
-        """Test playback timeout when client never connects."""
+    def test_unconnected_player_keeps_song_waiting(
+        self, mock_gettext, mock_sleep, mock_isfile, test_prefs
+    ):
+        """Waiting for a client must not silently skip the requested song."""
         events = EventSystem()
         filename_fn = lambda x, remove_youtube_id=True: "Test Song"
 
@@ -121,8 +123,9 @@ class TestPlaybackControllerPlayFile:
         # Client never connects (is_playing stays False)
         result = pc.play_file("/songs/test.mp4", "TestUser", semitones=0)
 
-        assert result.success is False
-        assert result.error is not None
+        assert result.success is True
+        assert pc.is_playing and pc.is_buffering
+        assert pc.now_playing == "Test Song"
 
     @patch("pikaraoke.lib.playback_controller.os.path.isfile", return_value=True)
     def test_play_file_stream_failure(self, mock_isfile, test_prefs):

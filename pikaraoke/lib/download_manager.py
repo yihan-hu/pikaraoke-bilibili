@@ -163,6 +163,9 @@ class DownloadManager:
         self._enqueue_order: deque[str] = deque()
         self._finished_for_queue: dict = {}
         self._workers: list[Greenlet] = []
+        self._requests: dict[str, dict] = {}
+        self._processes: dict = {}
+        self._cancelled: set[str] = set()
         self._worker: Greenlet | None = None
         self._is_downloading: bool = False  # Track if a download is currently in progress
 
@@ -326,6 +329,8 @@ class DownloadManager:
         if enqueue:
             self._enqueue_order.append(download_data["id"])
 
+        self._requests[download_data["id"]] = download_data
+
         # Add to the download queue and shadow list
         self.download_queue.put(download_data)
         self.pending_downloads.append(download_data)
@@ -343,6 +348,15 @@ class DownloadManager:
                 item for item in self.pending_downloads if item is not download_request
             ]
             job_id = download_request.setdefault("id", uuid.uuid4().hex)
+            if job_id in self._cancelled:
+                self._requests.pop(job_id, None)
+                self._cancelled.discard(job_id)
+                self.download_queue.task_done()
+                if self.download_queue.empty() and not self._active_downloads:
+                    self._events.emit("download_stopped")
+                continue
+            download_request["retry_pending"] = False
+            self._context.job_id = job_id
             self._is_downloading = True
 
             # Initialize active download state
@@ -368,6 +382,11 @@ class DownloadManager:
                 self._complete_for_queue(download_request, None)
             finally:
                 self._active_downloads.pop(job_id, None)
+                self._processes.pop(job_id, None)
+                if not any(item.get("id") == job_id for item in self.pending_downloads):
+                    self._requests.pop(job_id, None)
+                    if not download_request.get("retry_pending"):
+                        self._cancelled.discard(job_id)
                 self._is_downloading = bool(self._active_downloads)
                 self.active_download = None
                 self.download_queue.task_done()
@@ -376,11 +395,34 @@ class DownloadManager:
                 if self.download_queue.empty() and not self._active_downloads:
                     self._events.emit("download_stopped")
 
+    def cancel_download(self, job_id: str) -> bool:
+        """Cancel just the cache task; an online playback queue item remains intact."""
+        request = self._requests.get(job_id)
+        if request is None:
+            return False
+        self._cancelled.add(job_id)
+        self.pending_downloads = [
+            item for item in self.pending_downloads if item.get("id") != job_id
+        ]
+        self._complete_for_queue(request, None)
+        process = self._processes.get(job_id)
+        if process and process.poll() is None:
+            try:
+                for child in psutil.Process(process.pid).children(recursive=True):
+                    child.kill()
+                process.terminate()
+            except (psutil.Error, OSError):
+                pass
+        self._events.emit("download_stopped")
+        return True
+
     def _complete_for_queue(self, request: dict, song_path: str | None) -> None:
         """Finish in request order even when a later small download completes first."""
         if not request["enqueue"]:
             return
         job_id = request.get("id")
+        if job_id in self._cancelled:
+            song_path = None
         if job_id not in self._enqueue_order:
             if song_path:
                 self._queue_manager.enqueue(song_path, request["user"], log_action=False)
@@ -418,6 +460,11 @@ class DownloadManager:
             bufsize=1,  # Line buffered
             universal_newlines=True,
         )
+        job_id = getattr(self._context, "job_id", None)
+        if job_id:
+            self._processes[job_id] = process
+            if job_id in self._cancelled:
+                process.terminate()
         _use_spare_capacity(process)
 
         output_buffer = []
@@ -501,6 +548,7 @@ class DownloadManager:
             self.active_download["speed"] = "---"
             self.active_download["eta"] = "--:--"
 
+        request["retry_pending"] = True
         self.download_queue.put(request)
         self.pending_downloads.append(request)
         logging.info(
@@ -547,6 +595,9 @@ class DownloadManager:
             # has to reach the retry and error card below rather than vanish out of the worker.
             logging.error(f"yt-dlp invocation failed for {video_url}: {e}")
             rc, output = 1, f"{type(e).__name__}: {e}"
+
+        if request.get("id") in self._cancelled:
+            return -1
 
         if rc != 0:
             logging.error(f"yt-dlp stderr: {output}")

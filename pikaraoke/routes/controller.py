@@ -1,7 +1,9 @@
 """Playback control routes for skip, pause, volume, and transpose."""
 
+import math
+
 import flask_babel
-from flask import redirect, request, url_for
+from flask import jsonify, redirect, request, url_for
 from flask_smorest import Blueprint
 
 from pikaraoke.lib.current_app import broadcast_event, get_karaoke_instance
@@ -49,6 +51,27 @@ def restart():
     broadcast_event("restart")
     k.restart()
     return redirect(url_for("home.home"))
+
+
+@controller_bp.route("/seek/<position>", methods=["POST"])
+def seek(position):
+    """Jump the current song to a position in seconds."""
+    k = get_karaoke_instance()
+    pc = k.playback_controller
+    if not pc.now_playing_url:
+        return jsonify(error="Nothing is playing"), 409
+    try:
+        target = float(position)
+    except ValueError:
+        return jsonify(error="Invalid position"), 400
+    if not math.isfinite(target):
+        return jsonify(error="Invalid position"), 400
+    duration = pc.now_playing_duration
+    upper = max(0.0, float(duration) - 0.5) if duration else target
+    target = min(max(0.0, target), upper)
+    pc.now_playing_position = target
+    broadcast_event("seek", target)
+    return jsonify(success=True, position=target)
 
 
 @controller_bp.route("/volume/<volume>", methods=["POST"])

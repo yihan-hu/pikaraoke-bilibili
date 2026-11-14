@@ -180,6 +180,7 @@
     html += '<span class="is-hidden-mobile has-text-grey mx-2">&bull;</span>';
     html += '<span class="has-text-weight-bold has-text-success is-hidden-mobile">' + escapeText(np.now_playing) + '</span>';
     html += '<span class="is-size-7 has-text-weight-bold has-text-success is-hidden-tablet" style="width: 100%;">' + escapeText(np.now_playing) + '</span>';
+    if (np.is_buffering) html += '<span class="tag is-warning ml-2">正在缓冲，歌曲保留中</span>';
     html += '</div></td>';
 
     if (isAdmin) {
@@ -226,7 +227,7 @@
           host.setAttribute('data-url', d.url);
           host.innerHTML = `
               <div class="box mb-4 has-background-dark">
-                  <h4 class="title is-5 mb-2 dl-title"></h4>
+                  <div class="is-flex is-align-items-center is-justify-content-space-between"><h4 class="title is-5 mb-2 dl-title"></h4><button class="button is-small is-danger is-light cancel-download">取消下载</button></div>
                   <div class="dl-bar"><div class="dl-bar-fill"></div></div>
                   <div class="dl-meta is-size-7">
                       <span class="dl-phase-group">
@@ -241,6 +242,9 @@
                   </div>
               </div>`;
           host.querySelector('.dl-title').textContent = d.title;
+          const cancel = host.querySelector('.cancel-download');
+          cancel.hidden = !isAdmin || !d.id;
+          cancel.dataset.id = d.id || '';
           // Flush the 0% start, or the first width lands with nothing to transition from.
           void host.querySelector('.dl-bar-fill').offsetWidth;
       }
@@ -312,6 +316,7 @@
                       <div class="box mb-2 p-3 has-background-dark is-flex is-align-items-center">
                           <span class="has-text-grey">${escapeText(d.display_title || d.video_url)}</span>
                           ${tag}
+                          ${isAdmin && d.id ? `<button class="button is-small is-danger is-light ml-2 cancel-download" data-id="${d.id}">取消下载</button>` : ''}
                       </div>
                   `;
               });
@@ -356,6 +361,13 @@
           }
       });
   };
+
+  $(document).off('click.cancelDownload', '.cancel-download').on('click.cancelDownload', '.cancel-download', function () {
+      const button = this;
+      $(button).prop('disabled', true).text('取消中…');
+      $.ajax({url:{{ url_for('queue.cancel_download', download_id='JOB_ID') | tojson }}.replace('JOB_ID', encodeURIComponent(button.dataset.id)),method:'DELETE'})
+        .always(() => window.queuePage_getDownloads());
+  });
 
   window.retryDownloadError = function(errorId) {
       $.post('{{ url_for("queue.retry_download_error", error_id="ERROR_ID") }}'.replace("ERROR_ID", errorId), function() {

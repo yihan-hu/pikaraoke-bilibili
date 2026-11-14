@@ -9,6 +9,7 @@ from pikaraoke.lib.current_app import get_karaoke_instance
 # Track connected splash screen clients and the elected master
 splash_connections = set()
 master_splash_id = None
+splash_versions = {}
 
 
 def setup_socket_events(socketio):
@@ -18,21 +19,37 @@ def setup_socket_events(socketio):
         socketio: The SocketIO instance.
     """
 
-    @socketio.on("end_song")
-    def end_song(reason: str) -> None:
-        """Handle end_song WebSocket event from client.
-
-        Args:
-            reason: Reason for ending the song (e.g., 'complete', 'error').
-        """
+    def current_event(payload) -> bool:
         k = get_karaoke_instance()
-        k.playback_controller.end_song(reason)
+        return (
+            request.sid == master_splash_id
+            and isinstance(payload, dict)
+            and payload.get("stream_url") == k.playback_controller.now_playing_url
+            and bool(k.playback_controller.now_playing_url)
+        )
+
+    @socketio.on("end_song")
+    def end_song(payload) -> None:
+        """Ignore stale-track and non-master completion events."""
+        if current_event(payload):
+            get_karaoke_instance().playback_controller.end_song(payload.get("reason"))
 
     @socketio.on("start_song")
-    def start_song() -> None:
-        """Handle start_song WebSocket event when playback begins."""
+    def start_song(payload=None) -> None:
+        if current_event(payload):
+            get_karaoke_instance().playback_controller.start_song()
+
+    @socketio.on("playback_buffering")
+    def playback_buffering(payload) -> None:
+        if not current_event(payload):
+            return
         k = get_karaoke_instance()
-        k.playback_controller.start_song()
+        duration = payload.get("duration")
+        if isinstance(duration, (int, float)) and 0 < duration < 86400:
+            k.playback_controller.now_playing_duration = (
+                k.playback_controller.expected_duration or duration
+            )
+        k.playback_controller.set_buffering(bool(payload.get("buffering")))
 
     @socketio.on("clear_notification")
     def clear_notification() -> None:
@@ -41,35 +58,40 @@ def setup_socket_events(socketio):
         k.reset_now_playing_notification()
 
     @socketio.on("register_splash")
-    def register_splash() -> None:
-        """Handle splash screen registration and assign master/slave roles."""
+    def register_splash(payload=None) -> None:
+        """The most recently opened current-version player owns audio and completion."""
         global master_splash_id
         sid = request.sid
+        version = payload.get("protocol", 1) if isinstance(payload, dict) else 1
         splash_connections.add(sid)
-        logging.info(f"Splash screen registered: {sid}")
-
-        if master_splash_id is None:
+        splash_versions[sid] = version
+        if version >= 2 or master_splash_id is None:
             master_splash_id = sid
-            socketio.emit("splash_role", "master", room=sid)
-            logging.info(f"Master splash screens assigned: {sid}")
-        else:
-            socketio.emit("splash_role", "slave", room=sid)
-            logging.info(f"Slave splash screens assigned: {sid}")
+        for client in splash_connections:
+            role = "master" if client == master_splash_id else "slave"
+            socketio.emit("splash_role", role, room=client)
+            if splash_versions.get(client, 1) < 2:
+                # Retire stale pages' audio without changing persisted preferences.
+                socketio.emit("volume", 0, room=client)
+                for key, value in [
+                    ("disable_bg_music", True),
+                    ("bg_music_volume", 0),
+                    ("disable_bg_video", True),
+                ]:
+                    socketio.emit("preferences_update", {"key": key, "value": value}, room=client)
+        logging.info("Splash registered, protocol %s, master %s", version, sid == master_splash_id)
 
     @socketio.on("playback_position")
-    def handle_playback_position(position: float) -> None:
-        """Handle playback_position WebSocket event from the master splash screen.
+    def handle_playback_position(payload) -> None:
+        if not current_event(payload):
+            return
+        import math
 
-        Args:
-            position: Current playback position in seconds.
-        """
-        global master_splash_id
-        sid = request.sid
-        if sid == master_splash_id:
-            k = get_karaoke_instance()
-            k.playback_controller.now_playing_position = position
-            # Broadcast position to all other splash screens (slaves)
-            socketio.emit("playback_position", position, include_self=False)
+        position = payload.get("position")
+        if not isinstance(position, (int, float)) or not math.isfinite(position) or position < 0:
+            return
+        get_karaoke_instance().playback_controller.now_playing_position = position
+        socketio.emit("playback_position", position, include_self=False)
 
     @socketio.on("disconnect")
     def handle_disconnect() -> None:
@@ -78,13 +100,16 @@ def setup_socket_events(socketio):
         sid = request.sid
         if sid in splash_connections:
             splash_connections.remove(sid)
+            splash_versions.pop(sid, None)
             logging.info(f"Splash screen disconnected: {sid}")
             if sid == master_splash_id:
                 master_splash_id = None
                 logging.info("Master splash disconnected, electing new master")
                 if splash_connections:
                     # Elect new master from remaining connections
-                    new_master = next(iter(splash_connections))
+                    new_master = max(
+                        splash_connections, key=lambda client: splash_versions.get(client, 1)
+                    )
                     master_splash_id = new_master
                     socketio.emit("splash_role", "master", room=new_master)
                     logging.info(f"New master splash elected: {new_master}")

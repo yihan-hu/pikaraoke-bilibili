@@ -26,14 +26,14 @@ def validate_media_url(url: str) -> None:
         raise ValueError("Unsupported preview media host")
 
 
-def resolve_preview(url: str) -> str:
+def resolve_preview(url: str, generation: str = "") -> str:
     """Use Bilibili's HTML5 progressive format, including video and audio."""
     url = normalize_url(url)
     parsed = urlparse(url)
     if parsed.hostname != "www.bilibili.com":
         raise ValueError("Expected Bilibili video")
     path = cookie_path()
-    key = (url, path.stat().st_mtime_ns if path.exists() else 0)
+    key = (url, path.stat().st_mtime_ns if path.exists() else 0, generation)
     now = time.monotonic()
     if key in _streams and _streams[key][0] > now:
         return _streams[key][1]
@@ -77,9 +77,9 @@ def resolve_preview(url: str) -> str:
     return media_url
 
 
-def open_preview(url: str, byte_range: str | None):
+def open_preview(url: str, byte_range: str | None, generation: str = ""):
     """Forward Range so the browser can seek without downloading the whole video."""
-    media_url = resolve_preview(url)
+    media_url = resolve_preview(url, generation) if generation else resolve_preview(url)
     headers = dict(HEADERS)
     if byte_range:
         headers["Range"] = byte_range

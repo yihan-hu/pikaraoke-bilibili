@@ -1,7 +1,7 @@
 ; Bootstrapper around install.ps1 / uninstall.ps1. Owns only the shortcuts and the
 ; Add/Remove Programs entry. Build with build_installer.ps1.
 
-#define AppName "PiKaraoke"
+#define AppName "MaoKaraoke"
 #define AppPublisher "vicwomg"
 #define AppURL "https://github.com/vicwomg/pikaraoke"
 

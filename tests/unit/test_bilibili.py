@@ -92,7 +92,7 @@ def test_default_search_renders_bilibili_and_hides_credentials():
         response = app.test_client().get("/search")
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    assert 'value="bilibili" selected' in body
+    assert 'value="bilibili" checked' in body
     assert 'id="cookies-file"' not in body
 
 

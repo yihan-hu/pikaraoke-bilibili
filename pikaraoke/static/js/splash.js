@@ -26,6 +26,12 @@ let scoreReviews = {
 let isMaster = false;
 let uiScale = null;
 let clockIntervalId = null;
+let mediaGeneration = 0;
+let retryTimer = null;
+let startTimer = null;
+let lastPosition = 0;
+let endingStream = null;
+let backgroundGeneration = 0;
 
 // Browser detection
 const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
@@ -103,28 +109,89 @@ const hideVideo = () => {
   $("#video-container").hide();
 }
 
-const endSong = async (reason = null, showScore = false) => {
-  if (showScore && !PikaraokeConfig.disableScore) {
-    isScoreShown = true;
-    await startScore(withBasePath("/static/"));
-    isScoreShown = false;
-  }
-  currentVideoUrl = null;
-  if (hlsInstance) {
-    hlsInstance.destroy();
-    hlsInstance = null;
-  }
+const stopMainMedia = () => {
+  mediaGeneration++;
+  clearTimeout(retryTimer); retryTimer = null;
+  clearTimeout(startTimer); startTimer = null;
+  if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
   const video = getVideoPlayer();
-  video.pause();
-  $("#video-source").attr("src", "");
-  video.load();
+  if (!video) return;
+  $(video).stop(true, false);
+  video.pause(); video.removeAttribute('src');
+  $('#video-source').removeAttr('src'); video.load();
+  currentVideoUrl = null;
   hideVideo();
-  if (isMaster) {
-    socket.emit("end_song", reason);
-  } else {
-    console.log("Slave active (read-only): skipping end_song emission");
+};
+
+const isOnlineTrack = () => Boolean(currentVideoUrl && currentVideoUrl.includes('/bilibili-preview?'));
+
+const reportBuffering = (buffering) => {
+  if (isMaster && currentVideoUrl) socket.emit('playback_buffering', {
+    stream_url:currentVideoUrl, buffering, duration:getVideoPlayer().duration
+  });
+};
+
+const scheduleOnlineRecovery = () => {
+  if (!isOnlineTrack() || retryTimer || nowPlaying.is_paused) return;
+  reportBuffering(true);
+  const track = currentVideoUrl;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    if (track !== currentVideoUrl || nowPlaying.is_paused) return;
+    const video = getVideoPlayer();
+    if (Number.isFinite(video.currentTime) && video.currentTime > 0) lastPosition = video.currentTime;
+    loadTrack(track, lastPosition, true);
+  }, 10000);
+};
+
+const endSong = async (reason = null, showScore = false) => {
+  const track = currentVideoUrl;
+  if (!track || endingStream === track) return;
+  if (reason !== 'complete') { reportBuffering(true); if (isOnlineTrack()) scheduleOnlineRecovery(); return; }
+  const video = getVideoPlayer();
+  const expected = Number(nowPlaying.now_playing_duration || video.duration);
+  if (isOnlineTrack() && Number.isFinite(expected) && video.currentTime < expected - Math.max(5, expected * .03)) {
+    scheduleOnlineRecovery(); return;
   }
-}
+  endingStream = track;
+  const score = showScore && !PikaraokeConfig.disableScore;
+  isScoreShown = score;
+  stopMainMedia();
+  const generation = mediaGeneration;
+  if (score) await startScore(withBasePath('/static/'));
+  if (generation !== mediaGeneration || nowPlaying.now_playing_url !== track) return;
+  isScoreShown = false;
+  if (isMaster) socket.emit('end_song', {reason, stream_url:track});
+  endingStream = null;
+};
+
+const loadTrack = (track, position = 0, recovering = false) => {
+  stopMainMedia();
+  currentVideoUrl = track; endingStream = null; lastPosition = position;
+  const generation = mediaGeneration;
+  const video = getVideoPlayer();
+  video.muted = !isMaster;
+  let mediaUrl = track;
+  if (recovering && isOnlineTrack()) mediaUrl += '&retry=' + Date.now();
+  video.addEventListener('loadedmetadata', () => {
+    if (generation !== mediaGeneration) return;
+    if (position > 0) video.currentTime = Math.min(position, Number.isFinite(video.duration) ? Math.max(0, video.duration - .2) : position);
+    if (!nowPlaying.is_paused) video.play().catch(() => {});
+  }, {once:true});
+  if (track.endsWith('.m3u8')) {
+    const native = video.canPlayType('application/vnd.apple.mpegurl') && !isChrome && !isEdge && !isMobileSafari;
+    if (native) { video.src = mediaUrl; video.load(); }
+    else { hlsInstance = new Hls({startPosition:position}); hlsInstance.loadSource(mediaUrl); hlsInstance.attachMedia(video); }
+  } else { video.src = mediaUrl; video.load(); }
+  $('#video-container').show();
+  playBGMusic(false); playBGVideo(false);
+  if (!nowPlaying.is_paused) video.play().catch(() => {});
+  startTimer = setTimeout(() => {
+    if (generation !== mediaGeneration || nowPlaying.is_paused || isMediaPlaying(video)) return;
+    if (isOnlineTrack()) scheduleOnlineRecovery();
+    else endSong('failed to start');
+  }, playbackStartTimeout);
+};
 
 const getBackgroundMusicPlayer = () => document.getElementById('background-music');
 const getBackgroundVideoPlayer = () => document.getElementById('bg-video');
@@ -144,31 +211,27 @@ const getNextBgMusicSong = () => {
 
 const playBGMusic = async (play) => {
   const audio = getBackgroundMusicPlayer();
-  if (play) {
-    if (PikaraokeConfig.disableBgMusic) return;
-    if (!autoplayConfirmed) return;
-    if (bg_playlist.length === 0) return;
-
-    if (!audio.getAttribute('src')) audio.setAttribute('src', getNextBgMusicSong());
-
-    if (isMediaPlaying(audio)) return;
-    audio.volume = 0;
-    if (audio.readyState <= 2) await audio.load();
-    await audio.play().catch(e => console.log("Autoplay blocked (music)"));
-    $(audio).animate({ volume: PikaraokeConfig.bgMusicVolume }, 2000);
-  } else {
-    if (audio) {
-      $(audio).animate({ volume: 0 }, 2000, () => audio.pause());
-    }
+  if (!audio) return;
+  const generation = ++backgroundGeneration;
+  $(audio).stop(true, false);
+  if (!play || !shouldBackgroundMediaPlay() || PikaraokeConfig.disableBgMusic) {
+    audio.pause(); audio.volume = 0; return;
   }
-}
+  if (!bg_playlist.length || isMediaPlaying(audio)) return;
+  if (!audio.getAttribute('src')) audio.setAttribute('src', getNextBgMusicSong());
+  audio.volume = 0;
+  try { await audio.play(); } catch(e) { return; }
+  if (generation !== backgroundGeneration || !shouldBackgroundMediaPlay()) { audio.pause(); return; }
+  $(audio).animate({volume:PikaraokeConfig.bgMusicVolume}, 1000);
+};
 
 const playBGVideo = async (play) => {
   const bgVideo = getBackgroundVideoPlayer();
   const bgVideoContainer = $('#bg-video-container');
+  if (!bgVideo) return;
 
   if (play) {
-    if (PikaraokeConfig.disableBgVideo) return;
+    if (PikaraokeConfig.disableBgVideo || !shouldBackgroundMediaPlay()) return;
     if (!autoplayConfirmed) return;
 
     if (isMediaPlaying(bgVideo)) return;
@@ -177,7 +240,7 @@ const playBGVideo = async (play) => {
     bgVideo.play().catch(() => console.log("Autoplay blocked (video)"));
     bgVideoContainer.fadeIn(2000);
   } else {
-    if (bgVideo && isMediaPlaying(bgVideo)) {
+    if (bgVideo) {
       bgVideo.pause();
       bgVideoContainer.fadeOut(2000);
     }
@@ -185,7 +248,7 @@ const playBGVideo = async (play) => {
 }
 
 const shouldBackgroundMediaPlay = () => {
-  return autoplayConfirmed &&
+  return autoplayConfirmed && isMaster && !isScoreShown && !currentVideoUrl &&
     !nowPlaying.now_playing &&
     !nowPlaying.up_next;
 };
@@ -333,63 +396,22 @@ const handleNowPlayingUpdate = (np) => {
     } catch (e) { console.error(e); }
   }
 
-  if (np.now_playing_url && np.now_playing_url !== currentVideoUrl) {
-    currentVideoUrl = np.now_playing_url;
-    const streamUrl = np.now_playing_url;
-    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-    video.removeAttribute("src");
-    $("#video-source").attr("src", "");
-    video.load();
-    $("#video-source").attr("src", streamUrl);
-
-    if (!streamUrl.endsWith('.m3u8')) video.src = streamUrl;
-    if (streamUrl.endsWith('.m3u8')) {
-      const useNativeHLS = video.canPlayType('application/vnd.apple.mpegurl') && !isChrome && !isEdge && !isMobileSafari;
-      if (useNativeHLS) {
-        video.src = streamUrl;
-      } else {
-        if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-        hlsInstance = new Hls({ startPosition: 0 });
-        hlsInstance.loadSource(streamUrl);
-        hlsInstance.attachMedia(video);
-      }
-    }
-
-    video.load();
-    if (volume !== np.volume) {
-      volume = np.volume;
-      video.volume = volume;
-    }
-
-    const duration = $("#duration");
-    if (np.now_playing_duration) {
-      duration.text(`/${formatTime(np.now_playing_duration)}`);
-      duration.show();
-    } else {
-      duration.hide();
-    }
-
-    $("#video-container").show();
-
-    video.play().catch(err => {
-      console.error('Play failed:', err);
-      // Retry once if it was an autoplay block
-      setTimeout(() => video.play(), 1000);
-    });
-
-    if (np.now_playing_position && isMediaPlaying(video)) {
-      if (Math.abs(video.currentTime - np.now_playing_position) > 2) {
-        console.log("Syncing to server position:", np.now_playing_position);
-        video.currentTime = np.now_playing_position;
-      }
-    }
-
-    setTimeout(() => {
-      if (!isMediaPlaying(video) && !video.paused) {
-        endSong("failed to start");
-      }
-    }, playbackStartTimeout);
+  if (!np.now_playing_url) {
+    if (currentVideoUrl) stopMainMedia();
+    updateBackgroundMediaState();
+    return;
   }
+  if (np.now_playing_url !== currentVideoUrl) {
+    isScoreShown = false;
+    const position = Number(np.resume_position != null ? np.resume_position : (np.now_playing_position || 0));
+    loadTrack(np.now_playing_url, position);
+  }
+  volume = np.volume;
+  video.volume = volume;
+  video.muted = !isMaster;
+  if (np.now_playing_duration) { $('#duration').text('/' + formatTime(np.now_playing_duration)).show(); }
+  else $('#duration').hide();
+
 }
 
 async function loadNowPlaying() {
@@ -454,36 +476,37 @@ const setupOverlayMenus = () => {
 const setupVideoPlayer = () => {
   $('#video-container').hide();
   const video = getVideoPlayer();
-  video.addEventListener("play", () => {
-    $("#video-container").show();
-    if (isMaster) {
-      setTimeout(() => { socket.emit("start_song") }, 1200);
-    }
+  video.muted = !isMaster;
+  video.addEventListener('playing', () => {
+    if (!currentVideoUrl || video.readyState < 2) return;
+    clearTimeout(retryTimer); retryTimer = null;
+    clearTimeout(startTimer); startTimer = null;
+    playBGMusic(false); playBGVideo(false);
+    $('#video-container').show();
+    if (isMaster) socket.emit('start_song', {stream_url:currentVideoUrl});
+    reportBuffering(false);
   });
-
-  // Master reports playback position to server
+  for (const event of ['waiting','stalled']) video.addEventListener(event, () => {
+    if (!currentVideoUrl) return;
+    reportBuffering(true);
+    if (isOnlineTrack()) scheduleOnlineRecovery();
+  });
+  video.addEventListener('error', () => {
+    if (!currentVideoUrl) return;
+    if (isOnlineTrack()) scheduleOnlineRecovery();
+    else endSong('error while playing');
+  });
   setInterval(() => {
-    if (isMaster && isMediaPlaying(video)) {
-      socket.emit("playback_position", video.currentTime);
+    if (isMaster && currentVideoUrl && Number.isFinite(video.currentTime)) {
+      socket.emit('playback_position', {stream_url:currentVideoUrl, position:video.currentTime});
     }
   }, 1000);
-
-  video.addEventListener("ended", () => { endSong("complete", true); });
-  video.addEventListener("timeupdate", (e) => { $("#current").text(formatTime(video.currentTime)); });
-  $("#video source")[0].addEventListener("error", (e) => {
-    if (isMediaPlaying(video)) {
-      endSong("error while playing");
-    }
+  video.addEventListener('ended', () => endSong('complete', true));
+  video.addEventListener('timeupdate', () => {
+    if (Number.isFinite(video.currentTime) && video.currentTime > 0) lastPosition = video.currentTime;
+    $('#current').text(formatTime(video.currentTime));
   });
-  window.addEventListener(
-    'beforeunload',
-    function (event) {
-      if (isMediaPlaying(video)) {
-        endSong("splash screen closed");
-      }
-    },
-    true
-  );
+
 }
 
 const setupBackgroundMusicPlayer = () => {
@@ -492,9 +515,9 @@ const setupBackgroundMusicPlayer = () => {
   });
   const bgMusic = getBackgroundMusicPlayer();
   bgMusic.addEventListener("ended", async () => {
+    if (!shouldBackgroundMediaPlay() || PikaraokeConfig.disableBgMusic) return;
     bgMusic.setAttribute('src', getNextBgMusicSong());
-    await bgMusic.load();
-    await bgMusic.play();
+    await playBGMusic(true);
   });
 }
 
@@ -579,10 +602,13 @@ const applyPreferencesReset = (defaults) => {
 const setupSocketEvents = () => {
   socket.on('connect', () => {
     console.log('Socket connected');
-    socket.emit("register_splash");
+    socket.emit("register_splash", {protocol:2});
   });
   socket.on('splash_role', (role) => {
     isMaster = (role === "master");
+    if (getVideoPlayer()) getVideoPlayer().muted = !isMaster;
+    if (getBackgroundMusicPlayer()) getBackgroundMusicPlayer().muted = !isMaster;
+    updateBackgroundMediaState(true);
     console.log("Splash role assigned:", role, isMaster ? "(Master active)" : "(Slave active - read-only)");
   });
   socket.on('connect_error', (error) => {
@@ -590,6 +616,9 @@ const setupSocketEvents = () => {
     flashNotification(PikaraokeConfig.translations.socketConnectionLost, "is-danger");
   });
   socket.on('disconnect', (reason) => {
+    isMaster = false;
+    if (getVideoPlayer()) getVideoPlayer().muted = true;
+    playBGMusic(false);
     console.warn('Socket disconnected:', reason);
     flashNotification(PikaraokeConfig.translations.socketConnectionLost, "is-danger");
   });
@@ -612,20 +641,7 @@ const setupSocketEvents = () => {
       $(video).animate({ volume: currVolume }, 1000);
     }
   });
-  socket.on('skip', (reason) => {
-    const video = getVideoPlayer();
-    const currVolume = video.volume;
-    if (isMediaPlaying(video)) {
-      $(video).animate({ volume: 0 }, 1000, () => {
-        video.pause();
-        video.volume = currVolume;
-        hideVideo();
-      });
-    } else {
-      video.pause();
-      hideVideo();
-    }
-  });
+  socket.on('skip', () => { stopMainMedia(); });
   socket.on('volume', (val) => {
     const video = getVideoPlayer();
     if (val === "up") {
@@ -640,6 +656,15 @@ const setupSocketEvents = () => {
     const video = getVideoPlayer();
     video.currentTime = 0;
     if (video.paused) video.play();
+  });
+  socket.on('seek', (position) => {
+    const video = getVideoPlayer();
+    const target = Number(position);
+    if (!currentVideoUrl || !Number.isFinite(target) || target < 0) return;
+    const limit = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.2) : target;
+    video.currentTime = Math.min(target, limit);
+    lastPosition = video.currentTime;
+    if (isMaster) socket.emit('playback_position', {stream_url:currentVideoUrl, position:video.currentTime});
   });
   socket.on("notification", (data) => {
     const notification = data.split("::");
@@ -736,5 +761,5 @@ handleSocketRecovery();
 // Fallback: if socket connected before listeners were attached, register now
 if (socket.connected) {
   console.log('Socket already connected, registering splash...');
-  socket.emit("register_splash");
+  socket.emit("register_splash", {protocol:2});
 }

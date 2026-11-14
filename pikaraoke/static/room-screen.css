@@ -1,0 +1,14 @@
+#room-lyrics[hidden],#room-danmaku[hidden]{display:none!important}
+#room-lyrics{position:fixed;z-index:4;left:7%;right:7%;bottom:10%;pointer-events:none;text-align:center;font-family:'Microsoft YaHei UI','Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif;color:#fff;padding:18px 28px;border-radius:20px;background:linear-gradient(90deg,transparent,rgba(0,0,0,.58) 15%,rgba(0,0,0,.58) 85%,transparent);text-shadow:0 2px 5px #000,1px 0 2px #000,-1px 0 2px #000}
+#room-lyrics.at-top{bottom:auto;top:13%}
+.lyric-line{font-size:clamp(20px,2vw,36px);line-height:1.45;opacity:.6;font-weight:500;white-space:pre-wrap;overflow-wrap:anywhere}
+.lyric-line.current{font-size:clamp(30px,3.2vw,60px);color:#fff0c9;font-weight:700;opacity:1;-webkit-text-stroke:.35px rgba(0,0,0,.7);paint-order:stroke fill}
+#room-lyrics.full-sheet{top:22%;bottom:8%;left:5%;right:5%;padding:20px 28px;display:flex;flex-direction:column;gap:10px;background:rgba(12,15,20,.72);border:1px solid rgba(255,255,255,.1);box-shadow:0 8px 40px rgba(0,0,0,.25);border-radius:20px;overflow:hidden}
+.lyrics-sheet-title{font-size:clamp(16px,1.6vw,26px);font-weight:600;color:#fff0c9;flex:none}
+.lyrics-plain-grid{display:grid;flex:1;min-height:0;gap:2vw;text-align:center;line-height:1.4;font-weight:600}
+.lyrics-plain-column{min-width:0;align-self:start}
+.lyrics-plain-line{white-space:pre-wrap;overflow-wrap:anywhere}
+#room-danmaku{position:fixed;inset:0;z-index:5;overflow:hidden;pointer-events:none;font-family:'Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif}
+.room-comment{position:absolute;left:100%;width:max-content;padding:7px 16px;border-radius:14px;color:#fff;background:rgba(0,0,0,.24);text-shadow:0 2px 5px #000,1px 0 2px #000,-1px 0 2px #000;will-change:transform}
+.room-comment-body{font-weight:700;font-size:clamp(26px,2.6vw,46px);line-height:1.2;white-space:nowrap}
+.room-comment-name{font-weight:500;font-size:clamp(13px,1.1vw,20px);line-height:1.35;color:#e6e6e6;white-space:nowrap}

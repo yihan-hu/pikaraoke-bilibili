@@ -37,6 +37,7 @@ from pikaraoke.routes.background_music import background_music_bp
 from pikaraoke.routes.batch_song_renamer import batch_song_renamer_bp
 from pikaraoke.routes.controller import controller_bp
 from pikaraoke.routes.files import files_bp
+from pikaraoke.routes.room import room_bp
 from pikaraoke.routes.home import home_bp
 from pikaraoke.routes.images import images_bp
 from pikaraoke.routes.info import info_bp
@@ -93,7 +94,7 @@ app.jinja_env.globals.update(
 # Only expose the Swagger UI when --enable-swagger is passed.
 from flask_smorest import Api
 
-app.config["API_TITLE"] = "PiKaraoke API"
+app.config["API_TITLE"] = "MaoKaraoke API"
 app.config["API_VERSION"] = VERSION
 app.config["OPENAPI_VERSION"] = "3.0.2"
 app.config["OPENAPI_URL_PREFIX"] = "/"
@@ -122,6 +123,7 @@ _api_blueprints = [
 
 # Blueprints hidden from /apidocs (internal UI routes)
 _internal_blueprints = [
+    room_bp,
     home_bp,
     info_bp,
     splash_bp,
@@ -327,7 +329,7 @@ def main() -> None:
         )
 
     # expose shared configuration variables to the flask app
-    app.config["SITE_NAME"] = "PiKaraoke"
+    app.config["SITE_NAME"] = "MaoKaraoke"
 
     # Expose some functions to jinja templates. The session globals are bound at
     # import instead; these two need the Karaoke instance, which only exists here.

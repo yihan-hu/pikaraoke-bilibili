@@ -76,7 +76,7 @@ class Karaoke:
     loop_interval: int = 500  # in milliseconds
     default_logo_path: str = os.path.join(base_path, "static", "images", "logo.png")
     default_bg_music_path: str = os.path.join(base_path, "static", "music")
-    default_bg_video_path: str = os.path.join(base_path, "static", "video", "night_sea.mp4")
+    default_bg_video_path: str = os.path.join(base_path, "static", "video", "neon_rooftops.mp4")
     screensaver_timeout: int
 
     normalize_audio: bool
@@ -680,6 +680,7 @@ class Karaoke:
         this event resolves against a song the library already knows about.
         """
         self.song_manager.register_download(song_path)
+        self.playback_controller.cache_ready(song_path, youtube_id)
         if self.socketio:
             self.socketio.emit(
                 "song_downloaded",
@@ -692,6 +693,10 @@ class Karaoke:
         from pikaraoke.lib.bilibili import media_id
 
         song = dict(song)
+        self.playback_controller.now_playing = song["title"]
+        self.playback_controller.now_playing_user = song["user"]
+        self.playback_controller.is_buffering = True
+        self.playback_controller.events.emit("now_playing_update")
         online_key = media_id(song["file"])
         if online_key:
             local = self.db.get_paths_by_youtube_ids([online_key]).get(online_key)
@@ -701,6 +706,12 @@ class Karaoke:
             result = self.playback_controller.play_online(
                 song["file"], song["user"], song["title"], song["semitones"]
             )
+            if result.success and result.stream_url:
+                from gevent import spawn
+
+                spawn(
+                    self.playback_controller.load_online_metadata, song["file"], result.stream_url
+                )
         else:
             result = self.playback_controller.play_file(
                 song["file"], song["user"], song["semitones"]

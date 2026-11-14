@@ -60,7 +60,7 @@ def test_online_player_uses_local_relay_and_existing_end_protocol(tmp_path):
     assert result.success and controller.is_playing
     assert result.stream_url.startswith("/bilibili-preview?url=")
     assert controller.now_playing_user == "Singer"
-    assert result.duration == 120
+    assert result.duration is None  # Filled by the player once metadata arrives.
 
 
 def test_two_workers_run_together_with_separate_progress(tmp_path):

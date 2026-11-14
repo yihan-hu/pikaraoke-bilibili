@@ -46,6 +46,11 @@ class PlaybackController:
     now_playing_position: float | None = None
     is_paused: bool = True
     is_playing: bool = False
+    is_buffering: bool = False
+    resume_position: float | None = None
+    expected_duration: float | None = None
+    cached_file: str | None = None
+    _cache_switching_for: str | None = None
 
     def __init__(
         self,
@@ -109,6 +114,7 @@ class PlaybackController:
         self.now_playing_user = user
         self.now_playing_transpose = semitones
         self.now_playing_duration = result.duration
+        self.expected_duration = result.duration
         self.now_playing_url = result.stream_url
         self.now_playing_subtitle_url = result.subtitle_url
         self.is_paused = False
@@ -119,58 +125,121 @@ class PlaybackController:
 
     def play_online(self, url: str, user: str, title: str, semitones: int = 0) -> PlaybackResult:
         """Play an uncached Bilibili item through the local MP4 relay immediately."""
-        from urllib.parse import parse_qs, quote, urlparse
+        from urllib.parse import quote
         from uuid import uuid4
 
-        from pikaraoke.lib.bilibili import details, normalize_url
-        from pikaraoke.lib.bilibili_preview import resolve_preview
+        from pikaraoke.lib.bilibili import normalize_url
 
-        try:
-            url = normalize_url(url)
-            info = details(url)
-            number = int(parse_qs(urlparse(url).query).get("p", ["1"])[0])
-            part = next((part for part in info["parts"] if part["part"] == number), None)
-            if part is None:
-                raise ValueError("分P不存在")
-            resolve_preview(url)
-        except (ValueError, OSError) as error:
-            self.now_playing_filename = None
-            return PlaybackResult(
-                success=False, error=f"在线播放暂时不可用：{error}，后台缓存仍会继续"
-            )
+        url = normalize_url(url)
         self.claim(url)
-        self.now_playing = title or part["title"] or info["title"]
+        self.now_playing = title or "B站视频"
         self.now_playing_user = user
         self.now_playing_transpose = 0
-        self.now_playing_duration = part.get("duration")
+        self.now_playing_duration = None
+        self.expected_duration = None
+        self.now_playing_position = 0.0
         self.now_playing_url = self.stream_manager._with_base_path(
             f"/bilibili-preview?url={quote(url, safe='')}&instance={uuid4().hex}"
         )
         self.now_playing_subtitle_url = None
         self.is_paused = False
+        self.is_playing = True  # Reserve the current turn, including unlimited buffering.
+        self.is_buffering = True
+        self.cached_file = None
+        self.resume_position = None
         if semitones:
             self.events.emit("notification", "在线歌曲先用原调播放，缓存完成后可以变调", "info")
-        result = PlaybackResult(
-            success=True, stream_url=self.now_playing_url, duration=self.now_playing_duration
-        )
+        result = PlaybackResult(success=True, stream_url=self.now_playing_url)
         self.events.emit("playback_started")
-        return self._wait_for_client(result)
+        return result
+
+    def load_online_metadata(self, video_url: str, stream_url: str) -> None:
+        """Keep the full video duration so a short CDN response is not treated as completion."""
+        from urllib.parse import parse_qs, urlparse
+        from pikaraoke.lib.bilibili import details
+
+        try:
+            info = details(video_url)
+            number = int(parse_qs(urlparse(video_url).query).get("p", ["1"])[0])
+            part = next((item for item in info["parts"] if item["part"] == number), None)
+            if self.now_playing_url != stream_url or not part:
+                return
+            duration = part.get("duration")
+            if isinstance(duration, (float, int)) and duration > 0:
+                self.expected_duration = duration
+                self.now_playing_duration = duration
+                self.events.emit("now_playing_update")
+        except (ValueError, OSError):
+            logging.info("Online duration unavailable; retaining the current song")
+
+    def cache_ready(self, path: str, video_id: str | None) -> None:
+        """Use a newly completed cache if this online track is currently buffering."""
+        from pikaraoke.lib.bilibili import media_id
+
+        if not self.now_playing_filename or not self.now_playing_filename.startswith("https://"):
+            return
+        if media_id(self.now_playing_filename) != video_id:
+            return
+        self.cached_file = path
+        if self.is_buffering:
+            self.set_buffering(True)
+
+    def set_buffering(self, buffering: bool) -> None:
+        """Buffering never removes the current song or resumes background music."""
+        self.is_buffering = buffering
+        self.events.emit("now_playing_update")
+        if buffering and self.cached_file and self._cache_switching_for is None:
+            from gevent import spawn
+
+            self._cache_switching_for = self.now_playing_url
+            spawn(self._resume_cached, self.now_playing_url, self.cached_file)
+
+    def _resume_cached(self, source_url: str, path: str) -> None:
+        """Prepare a local stream, then resume the same performance at its position."""
+        manager = StreamManager(
+            self.preferences, self.stream_manager.streaming_format, self.stream_manager.base_path
+        )
+        try:
+            result = manager.play_file(path, 0)
+            if self.now_playing_url != source_url or not self.is_playing:
+                manager.kill_ffmpeg()
+                return
+            if not result.success:
+                manager.kill_ffmpeg()
+                return
+            expected = self.expected_duration
+            if (
+                expected
+                and result.duration
+                and result.duration < expected - max(5, expected * 0.03)
+            ):
+                manager.kill_ffmpeg()
+                self.cached_file = None
+                self.events.emit(
+                    "notification", "缓存文件长度异常，继续等待在线播放或手动切歌", "warning"
+                )
+                return
+            position = self.now_playing_position or 0.0
+            self.stream_manager.kill_ffmpeg()
+            self.stream_manager = manager
+            self.now_playing_filename = path
+            self.now_playing_url = result.stream_url
+            self.now_playing_duration = result.duration
+            self.now_playing_subtitle_url = result.subtitle_url
+            self.resume_position = position
+            self.is_buffering = True
+            self.events.emit("now_playing_update")
+            self.events.emit("notification", "缓存已完成，正在从原进度继续播放", "success")
+        finally:
+            if self._cache_switching_for == source_url:
+                self._cache_switching_for = None
 
     def _wait_for_client(self, result: PlaybackResult) -> PlaybackResult:
         """Use the same start/end protocol for local and online media."""
-        # Wait for client to connect
-        max_retries = 100
-        while not self.is_playing and max_retries > 0:
-            time.sleep(0.1)
-            max_retries -= 1
-
         if not self.is_playing:
-            error_msg = _("Stream was not playable! Skipping track")
-            logging.error(error_msg)
-            self.end_song(reason="timeout")
-            return PlaybackResult(success=False, error=error_msg)
-
-        logging.debug("Stream is playing")
+            self.is_playing = True
+            self.is_buffering = True
+            self.events.emit("now_playing_update")
         return result
 
     def claim(self, file_path: str) -> None:
@@ -188,9 +257,12 @@ class PlaybackController:
         Called by Flask route when client connects to stream.
         Idempotent - safe to call multiple times.
         """
+        self.is_buffering = False
+        self.resume_position = None
         if not self.is_playing:
             logging.info(f"Song starting: {self.now_playing}")
             self.is_playing = True
+        self.events.emit("now_playing_update")
 
     def end_song(self, reason: str | None = None) -> None:
         """End the current song and clean up resources.
@@ -258,6 +330,21 @@ class PlaybackController:
             logging.warning("Tried to pause, but no file is playing!")
             return False
 
+    def media_key(self) -> str | None:
+        if not self.now_playing_filename:
+            return None
+        import hashlib
+
+        from pikaraoke.lib.bilibili import media_id
+        from pikaraoke.lib.library_scanner import _extract_youtube_id
+
+        path = self.now_playing_filename
+        return (
+            media_id(path)
+            or _extract_youtube_id(path)
+            or hashlib.sha256(path.encode("utf-8")).hexdigest()[:20]
+        )
+
     def get_now_playing(self) -> dict[str, str | int | float | bool | None]:
         """Get the current playback state.
 
@@ -273,6 +360,9 @@ class PlaybackController:
             "now_playing_subtitle_url": self.now_playing_subtitle_url,
             "now_playing_position": self.now_playing_position,
             "is_paused": self.is_paused,
+            "is_buffering": self.is_buffering,
+            "media_key": self.media_key(),
+            "resume_position": self.resume_position,
         }
 
     def reset_now_playing(self) -> None:
@@ -287,6 +377,11 @@ class PlaybackController:
         self.now_playing_transpose = 0
         self.now_playing_duration = None
         self.now_playing_position = None
+        self.is_buffering = False
+        self.resume_position = None
+        self.cached_file = None
+        self.expected_duration = None
+        self._cache_switching_for = None
 
     def log_output(self) -> None:
         """Log any pending FFmpeg output."""

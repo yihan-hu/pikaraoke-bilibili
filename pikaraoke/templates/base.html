@@ -15,7 +15,10 @@
   <link rel="stylesheet" href="{{  url_for('static', filename='bulma.min.css') }}">
   <link rel="stylesheet" href="{{  url_for('static', filename='bulma-dark.css') }}">
   <link rel="stylesheet" href="{{  url_for('static', filename='custom.css') }}">
-  <link rel="icon" type="image/png" href="{{  url_for('static', filename='images/microphone.png') }}">
+  <link rel="stylesheet" href="{{  url_for('static', filename='maokaraoke.css') }}?v=3">
+  <meta name="theme-color" content="#120d24">
+  <link rel="icon" type="image/png" href="{{  url_for('static', filename='images/favicon.png') }}">
+  <link rel="apple-touch-icon" href="{{  url_for('static', filename='images/maokaraoke-icon.png') }}">
   <link rel="stylesheet" href="{{  url_for('static', filename='fontello/css/fontello.css') }}?v=2">
 
   <script>
@@ -297,9 +300,32 @@
       });
     }
 
+    // Range inputs paint their filled part from --mk-fill (see maokaraoke.css).
+    // Scripts often set .value without firing an event, so a slow sweep keeps
+    // every slider honest alongside the immediate input handler.
+    window.mkPaintRange = function (el) {
+      var min = Number(el.min || 0), max = Number(el.max || 100);
+      var pct = max > min ? ((Number(el.value) - min) / (max - min)) * 100 : 0;
+      pct = Math.max(0, Math.min(100, pct));
+      el.style.setProperty("--mk-fill", pct + "%");
+      // Bipolar sliders (e.g. ±5 s lyric offset) fill outward from zero.
+      if (el.classList.contains("mk-range-center")) {
+        var zero = max > min ? ((0 - min) / (max - min)) * 100 : 50;
+        el.style.setProperty("--mk-from", Math.min(zero, pct) + "%");
+        el.style.setProperty("--mk-to", Math.max(zero, pct) + "%");
+      }
+    };
+    if (!window.mkRangeSweep) {
+      $(document).on("input change", 'input[type="range"]', function () { window.mkPaintRange(this); });
+      window.mkRangeSweep = setInterval(function () {
+        document.querySelectorAll('input[type="range"]').forEach(window.mkPaintRange);
+      }, 500);
+    }
+
     $(function () {
       connectSocket();
       bindAddSongLinks();
+      document.querySelectorAll('input[type="range"]').forEach(window.mkPaintRange);
 
       // Unlike the singer field, the ribbon is not a KJ-mode control: everyone
       // in the room sees which session is running.
@@ -340,129 +366,30 @@
 </head>
 
 <style>
-  /* Icon-to-label spacing. Bulma already makes navbar items flex containers with
-     a .75rem gap, and the fontello glyph adds another .2em of its own, so the
-     icon floated well clear of its label. The flex gap is the only lever needed
-     once the glyph's margin is zeroed -- the element margin that used to be here
-     just stacked a third value on top. */
-  .navbar-item,
-  .navbar-link {
-    gap: 0.3rem;
-  }
+  /* Shell layout lives in maokaraoke.css; only per-page leftovers stay here. */
   .navbar-item > i::before,
   .navbar-link > i::before {
     margin-right: 0;
   }
-  .base-notification {
-    position: fixed;
-    width: 500px;
-    bottom: 5px;
-    left: 50%;
-    margin-left: -250px;
-    z-index: 20;
-  }
-  .current-user {
-    position: fixed;
-    padding: 3px;
-    bottom: 5px;
-    right: 10px;
-  }
-  .session-ribbon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    /* No horizontal margin: the .box below is flush with the container's
-       padding, and any inset here leaves the ribbon visibly narrower than
-       every other block on the page. */
-    margin: 4px 0 0;
-    padding: 4px 12px;
-    border-radius: 6px;
-    background-color: rgba(255, 255, 255, 0.04);
-    color: hsl(0, 0%, 71%);
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-  .session-ribbon-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .session-ribbon-dot {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background-color: hsl(141, 53%, 53%);
-    animation: session-ribbon-pulse 2s ease-in-out infinite;
-  }
-  @keyframes session-ribbon-pulse {
-    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(72, 199, 116, 0.5); }
-    50% { opacity: 0.55; box-shadow: 0 0 0 4px rgba(72, 199, 116, 0); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .session-ribbon-dot { animation: none; }
-  }
-  tr:nth-child(even) {
-    background-color: rgb(50, 55, 55);
-  }
-  @media screen and (max-width: 1088px) {
-    .navbar-brand > .navbar-item > span {
-      display: none;
-    }
-    .base-notification {
-      position: fixed;
-      width: 100%;
-      bottom: 5px;
-      left: 0px;
-      margin-left: 0px;
-    }
-    body {
-      min-height: 120vh;
-    }
-    .navbar-menu.is-active {
-      position: absolute;
-      right: 0px;
-    }
-  }
 </style>
 
-<body>
+<body{% if not blank_page %} class="mk-app"{% endif %}>
 
   {% if not blank_page %}
-  <div class="container" style="padding: 5px; max-width: 900px;">
+  <header class="mk-topbar">
+    <div class="mk-topbar-inner">
     <nav class="navbar" role="navigation" aria-label="main navigation">
-      <div class="navbar-brand" id="brand" style="padding-left: 10px">
-        <a id="home" class="navbar-item" href="{{ url_for('home.home') }}">
-          <i class="icon icon-home-2" title="Home"></i>
-          {# MSG: Navigation link for the home page. #}
-          <span>{% trans %}Home{% endtrans %}</span>
+      <div class="navbar-brand" id="brand">
+        <a class="mk-brand" href="{{ url_for('home.home') }}" aria-label="{{ site_title }}">
+          <img class="mk-brand-icon" src="{{ url_for('static', filename='images/maokaraoke-icon.png') }}" alt="" width="36" height="36">
+          <img class="mk-brand-word" src="{{ url_for('static', filename='images/wordmark.png') }}" alt="{{ site_title }}" height="22">
         </a>
-
-        <a id="queue" class="navbar-item" href="{{ url_for('queue.queue') }}">
-          <i class="icon icon-list-numbered" title="Queue"></i>
-          {# MSG: Navigation link for the queue page. #}
-          <span>{% trans %}Queue{% endtrans %}</span>
-        </a>
-        <!-- The labels below are hidden under 1088px, so the icon is the only nav
-             signal a phone gets and the aria-label is the only accessible name.
-             Do not change these ids or hrefs: updateNavHighlight() derives the
-             active item from the first URL path segment. -->
-        <a id="browse" class="navbar-item" href="{{ url_for('files.browse') }}"
-          aria-label="{% trans %}Songs{% endtrans %}">
-          <i class="icon icon-music"></i>
-          {# MSG: Navigation link for the page listing songs already on this machine. #}
-          <span>{% trans %}Songs{% endtrans %}</span>
-        </a>
-        <a id="search" class="navbar-item" href="{{ url_for('search.search') }}"
-          aria-label="{% trans %}Add New{% endtrans %}">
-          <i class="icon icon-plus-circled"></i>
-          {# MSG: Navigation link for the page used to get new songs into the library. #}
-          <span>{% trans %}Add New{% endtrans %}</span>
+        <a id="current-user" class="mk-user-chip is-hidden" href="#">
+          <i class="icon icon-mic-1" aria-hidden="true"></i>
+          <span></span>
         </a>
         <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false">
+          <span aria-hidden="true"></span>
           <span aria-hidden="true"></span>
           <span aria-hidden="true"></span>
           <span aria-hidden="true"></span>
@@ -470,16 +397,12 @@
       </div>
       <div class="navbar-menu" id="menu">
         <div class="navbar-end">
-          <a id="current-user" class="navbar-item is-hidden" href="#">
-            <i class="icon  icon-mic-1" title="Current user"></i>
-            <span></span>
-          </a>
           <!-- Home for settings and admin tools, so the main nav stays the
                four things a singer actually uses. -->
           <div id="pikaraoke-menu" class="navbar-item has-dropdown is-hoverable">
             <a class="navbar-link">
-              <i class="icon icon-info-circled-1" title="Pikaraoke"></i>
-              <span>Pikaraoke</span>
+              <i class="icon icon-cog" aria-hidden="true"></i>
+              <span>{% trans %}Settings{% endtrans %}</span>
             </a>
             <!-- Split by audience, not by topic. Above the divider is what the
                  room came for: the stats and the log, open to every device.
@@ -514,6 +437,36 @@
       </div>
     </nav>
 
+    <!-- The four places a singer actually goes. Pills in the top bar on wide
+         screens, a thumb-reach tab bar on phones. Do not change these ids or
+         hrefs: updateNavHighlight() derives the active item from the first URL
+         path segment, and clears .navbar-item, which is why they carry it. -->
+    <nav class="mk-tabs">
+      <a id="home" class="navbar-item mk-tab" href="{{ url_for('home.home') }}">
+        <i class="icon icon-home-2" aria-hidden="true"></i>
+        {# MSG: Navigation link for the home page. #}
+        <span>{% trans %}Home{% endtrans %}</span>
+      </a>
+      <a id="queue" class="navbar-item mk-tab" href="{{ url_for('queue.queue') }}">
+        <i class="icon icon-list-numbered" aria-hidden="true"></i>
+        {# MSG: Navigation link for the queue page. #}
+        <span>{% trans %}Queue{% endtrans %}</span>
+      </a>
+      <a id="browse" class="navbar-item mk-tab" href="{{ url_for('files.browse') }}">
+        <i class="icon icon-music" aria-hidden="true"></i>
+        {# MSG: Navigation link for the page listing songs already on this machine. #}
+        <span>{% trans %}Songs{% endtrans %}</span>
+      </a>
+      <a id="search" class="navbar-item mk-tab mk-tab-accent" href="{{ url_for('search.search') }}">
+        <i class="icon icon-plus-circled" aria-hidden="true"></i>
+        {# MSG: Navigation link for the page used to get new songs into the library. #}
+        <span>{% trans %}Add New{% endtrans %}</span>
+      </a>
+    </nav>
+    </div>
+  </header>
+
+  <div class="container mk-shell">
     {% set session_name = active_session_name() or '' %}
     {# Always in the DOM, hidden when empty, so setSessionRibbon() can show and
        hide it rather than having to build it; the server settles only which
@@ -542,7 +495,7 @@
       <div class="flash"></div>
     </div>
 
-    <div class="box" style="margin-top: 5px;">
+    <main class="box mk-page">
       {# Written once here rather than per page: the heading is chrome, and its
          text is the same string the <title> tag uses. #}
       <header class="page-header">
@@ -556,7 +509,7 @@
         {% block content %}
         {% endblock %}
       </div>
-    </div>
+    </main>
   </div>
   {% endif %}
 

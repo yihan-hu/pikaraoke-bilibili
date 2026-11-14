@@ -221,3 +221,12 @@ def shuffle_queue():
     return json.dumps(
         {"success": changed, "message": "已随机打乱待播列表" if changed else "待播歌曲不足两首"}
     )
+
+
+@queue_bp.route("/queue/downloads/<download_id>", methods=["DELETE"])
+def cancel_download(download_id):
+    """Cancel pending or running cache work without removing a requested song."""
+    if not is_admin():
+        return json.dumps({"success": False, "error": "Unauthorized"}), 403
+    success = get_karaoke_instance().download_manager.cancel_download(download_id)
+    return json.dumps({"success": success}), 200 if success else 404
