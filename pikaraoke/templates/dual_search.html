@@ -3,6 +3,18 @@
 {% block content %}
 {% if error %}<p role="alert">{{ error }}</p>{% endif %}
 {% include 'partials/singer_field.html' %}
+{% if is_admin() %}
+<section class="box" id="login-card">
+  <h2 class="title is-5">B站登录</h2>
+  <p id="login-summary" role="status">普通视频可以直接搜索。需要账号权限时，请扫码登录。</p>
+  <p class="my-2">扫码并在手机确认后自动记住，重启也能使用。登录过期时需重新扫码。</p>
+  <button class="button is-info" id="qr-login">扫码登录 / 重新登录</button>
+  <div id="qr-panel" hidden class="mt-3">
+    <img id="qr-image" alt="请用 B站 App 扫描二维码" style="width:260px;max-width:100%;background:white">
+    <p id="qr-message" role="status"></p>
+  </div>
+</section>
+{% endif %}
 <form action="{{ url_for('search.search') }}" method="get" class="box">
   <label class="label" for="source">视频平台</label>
   <div class="select"><select id="source" name="source"><option value="bilibili" {% if source == 'bilibili' %}selected{% endif %}>Bilibili</option><option value="youtube" {% if source == 'youtube' %}selected{% endif %}>YouTube</option></select></div>
@@ -112,7 +124,49 @@ $(function () {
     const file = $('#cookies-file')[0].files[0]; if (!file) return;
     const data = new FormData(); data.append('cookies', file); credentials('POST', data);
   });
-  $('#clear-cookies').on('click', () => credentials('DELETE'));
+  $('#clear-cookies').on('click', () => { qrGeneration++; $('#qr-panel').prop('hidden', true); $('#login-summary').text('已清除登录信息，普通视频仍可搜索。'); credentials('DELETE'); });
+  let qrGeneration = 0;
+  async function settingsPost(url, body) {
+    return jsonRequest(url, {method:'POST', headers:{'Content-Type':'application/json', 'X-Pikaraoke-Settings':'1'}, body:JSON.stringify(body || {})});
+  }
+  async function pollQR(id, generation) {
+    if (generation !== qrGeneration) return;
+    try {
+      const result = await settingsPost({{ url_for('search.bilibili_login_poll') | tojson }}, {id});
+      if (generation !== qrGeneration) return;
+      $('#qr-message').text(result.message);
+      if (result.status === 'success') {
+        $('#login-summary').text(result.message); $('#qr-panel').prop('hidden', true);
+        $('#cookie-status').text(result.message); return;
+      }
+      if (result.status === 'expired') { $('#qr-image').removeAttr('src'); return; }
+      setTimeout(() => pollQR(id, generation), 3000);
+    } catch(error) {
+      if (generation !== qrGeneration) return;
+      $('#qr-message').text(error.message + '，稍后自动重试');
+      setTimeout(() => pollQR(id, generation), 5000);
+    }
+  }
+  $('#qr-login').on('click', async function () {
+    const generation = ++qrGeneration;
+    $(this).prop('disabled', true); $('#qr-panel').prop('hidden', false);
+    $('#qr-image').removeAttr('src'); $('#qr-message').text('正在生成二维码…');
+    try {
+      const data = await settingsPost({{ url_for('search.bilibili_login_qr') | tojson }});
+      if (generation !== qrGeneration) return;
+      $('#qr-image').attr('src', data.image); $('#qr-message').text('请用 B站 App 扫码，并在手机确认登录');
+      pollQR(data.id, generation);
+    } catch(error) { $('#qr-message').text(error.message); }
+    finally { $(this).prop('disabled', false); }
+  });
+  {% if is_admin() %}
+  jsonRequest({{ url_for('search.bilibili_cookies') | tojson }}).then(data => {
+    if (data.configured) {
+      $('#login-summary').text('已记住本机登录信息，正在检查…');
+      jsonRequest({{ url_for('search.bilibili_login_status') | tojson }}).then(result => $('#login-summary').text(result.message)).catch(error => $('#login-summary').text(error.message));
+    }
+  }).catch(error => $('#login-summary').text(error.message));
+  {% endif %}
   $('#check-cookies').on('click', async () => {
     try { const result = await jsonRequest({{ url_for('search.bilibili_login_status') | tojson }}); $('#cookie-status').text(result.message); }
     catch(error) { $('#cookie-status').text(error.message); }

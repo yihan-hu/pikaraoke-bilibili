@@ -17,7 +17,71 @@ def cookie_path() -> Path:
 
 
 def cookie_args() -> list[str]:
-    return ["--cookies", str(cookie_path())] if cookie_path().exists() else []
+    path = cookie_path() if cookie_path().exists() else anonymous_cookie_path()
+    return ["--cookies", str(path)] if path.exists() else []
+
+
+def anonymous_cookie_path() -> Path:
+    return Path(get_data_directory()) / "bilibili-anonymous-cookies.txt"
+
+
+def web_session():
+    """Establish Bilibili's normal visitor session before using its web API."""
+    import requests
+
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com/",
+        }
+    )
+    if cookie_path().exists():
+        jar = http.cookiejar.MozillaCookieJar(str(cookie_path()))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        session.cookies.update(jar)
+    response = session.get("https://www.bilibili.com/", timeout=15)
+    response.raise_for_status()
+    if not cookie_path().exists():
+        jar = http.cookiejar.MozillaCookieJar(str(anonymous_cookie_path()))
+        for cookie in session.cookies:
+            if cookie.domain.lstrip(".") == "bilibili.com":
+                jar.set_cookie(cookie)
+        jar.save(ignore_discard=True, ignore_expires=True)
+    return session
+
+
+def search_videos(query: str) -> list[dict]:
+    """Search public videos using a visitor session; account login is optional."""
+    import html
+
+    with web_session() as session:
+        response = session.get(
+            "https://api.bilibili.com/x/web-interface/search/type",
+            params={"search_type": "video", "keyword": query, "page": 1},
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    if payload.get("code") != 0:
+        raise ValueError("B站搜索暂时受限，请稍后重试")
+    results = []
+    for item in payload.get("data", {}).get("result", [])[:10]:
+        bvid = item.get("bvid", "")
+        if not re.fullmatch(r"BV[0-9A-Za-z]+", bvid):
+            continue
+        picture = item.get("pic", "")
+        results.append(
+            {
+                "title": html.unescape(re.sub(r"<[^>]+>", "", item.get("title", ""))),
+                "url": f"https://www.bilibili.com/video/{bvid}",
+                "id": bvid,
+                "uploader": item.get("author", ""),
+                "duration": item.get("duration", ""),
+                "thumbnail": "https:" + picture if picture.startswith("//") else picture,
+            }
+        )
+    return results
 
 
 def normalize_url(url: str) -> str:
@@ -87,20 +151,14 @@ def extract(target: str, flat: bool = False, playlist: bool = False) -> dict:
 
 def details(url: str) -> dict:
     url = normalize_url(url)
-    import requests
-
-    jar = http.cookiejar.MozillaCookieJar(str(cookie_path()))
-    if cookie_path().exists():
-        jar.load(ignore_discard=True, ignore_expires=True)
     video = urlparse(url).path.strip("/").split("/")[1]
     query = {"bvid": video} if video.startswith("BV") else {"aid": video[2:]}
-    response = requests.get(
-        "https://api.bilibili.com/x/web-interface/view",
-        params=query,
-        cookies=jar,
-        headers={"Referer": "https://www.bilibili.com/", "User-Agent": "Mozilla/5.0"},
-        timeout=15,
-    )
+    with web_session() as session:
+        response = session.get(
+            "https://api.bilibili.com/x/web-interface/view",
+            params=query,
+            timeout=15,
+        )
     response.raise_for_status()
     payload = response.json()
     if payload.get("code") != 0:

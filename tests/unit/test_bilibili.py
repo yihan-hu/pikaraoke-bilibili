@@ -47,7 +47,8 @@ def test_parts_are_separate():
             "pages": [{"part": "One"}, {"part": "Two"}],
         },
     }
-    with patch("requests.get", return_value=response):
+    with patch("pikaraoke.lib.bilibili.web_session") as session:
+        session.return_value.__enter__.return_value.get.return_value = response
         result = details("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
     assert [p["part"] for p in result["parts"]] == [1, 2]
     assert result["parts"][1]["title"] == "Two"

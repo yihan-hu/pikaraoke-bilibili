@@ -115,8 +115,9 @@ def download(form):
     try:
         song = normalize_url(form["song_url"])
         if "/video/av" in song:
-            from pikaraoke.lib.bilibili import details
             from urllib.parse import parse_qs, urlparse
+
+            from pikaraoke.lib.bilibili import details
 
             number = int(parse_qs(urlparse(song).query).get("p", ["1"])[0])
             parts = details(song)["parts"]
@@ -165,6 +166,9 @@ def bilibili_cookies():
     if request.method != "GET" and request.headers.get("X-Pikaraoke-Settings") != "1":
         return jsonify(error="Invalid settings request"), 403
     if request.method == "DELETE":
+        from pikaraoke.lib.bilibili_login import cancel_challenges
+
+        cancel_challenges()
         cookie_path().unlink(missing_ok=True)
     if request.method == "POST":
         upload = request.files.get("cookies")
@@ -193,12 +197,11 @@ def bilibili_login_status():
         return jsonify(error="Administrator required"), 403
     if not cookie_path().exists():
         return jsonify(message="未配置登录信息")
-    jar = http.cookiejar.MozillaCookieJar(str(cookie_path()))
+    from pikaraoke.lib.bilibili import web_session
+
     try:
-        jar.load(ignore_discard=True, ignore_expires=True)
-        data = requests.get(
-            "https://api.bilibili.com/x/web-interface/nav", cookies=jar, timeout=10
-        ).json()
+        with web_session() as client:
+            data = client.get("https://api.bilibili.com/x/web-interface/nav", timeout=10).json()
         logged_in = bool(data.get("data", {}).get("isLogin"))
         return jsonify(
             logged_in=logged_in,
@@ -206,3 +209,39 @@ def bilibili_login_status():
         )
     except (OSError, ValueError, requests.RequestException):
         return jsonify(error="无法检查登录，请检查网络或重新导入 cookies"), 502
+
+
+@search_bp.route("/bilibili-login/qr", methods=["POST"])
+def bilibili_login_qr():
+    """Create an administrator-only, short-lived QR challenge."""
+    from pikaraoke.lib.bilibili_login import create_challenge
+    from pikaraoke.lib.current_app import is_admin
+
+    if not is_admin() or request.headers.get("X-Pikaraoke-Settings") != "1":
+        return jsonify(error="Administrator required"), 403
+    try:
+        response = jsonify(create_challenge())
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except (OSError, ValueError):
+        return jsonify(error="无法创建登录二维码，请检查网络后重试"), 502
+
+
+@search_bp.route("/bilibili-login/poll", methods=["POST"])
+def bilibili_login_poll():
+    """Poll a challenge and persist the session only after phone confirmation."""
+    from pikaraoke.lib.bilibili_login import poll_challenge
+    from pikaraoke.lib.current_app import is_admin
+
+    if not is_admin() or request.headers.get("X-Pikaraoke-Settings") != "1":
+        return jsonify(error="Administrator required"), 403
+    try:
+        body = request.get_json(silent=True) or {}
+        challenge_id = body.get("id", "")
+        if not isinstance(challenge_id, str):
+            return jsonify(error="Invalid challenge"), 400
+        response = jsonify(poll_challenge(challenge_id))
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except (OSError, ValueError):
+        return jsonify(error="登录状态查询失败，请重试"), 502

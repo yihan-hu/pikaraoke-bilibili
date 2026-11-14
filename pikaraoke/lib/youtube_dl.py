@@ -236,9 +236,9 @@ def get_search_results(query: str, source: str = "youtube") -> list[SearchResult
         One SearchResult per hit, in the order yt-dlp reported them.
     """
     if source == "bilibili":
-        from pikaraoke.lib.bilibili import extract
+        from pikaraoke.lib.bilibili import search_videos
 
-        info = extract(f"bilisearch10:{query}", flat=True)
+        info = {"entries": search_videos(query)}
         return [
             SearchResult(
                 e.get("title", ""),
