@@ -23,13 +23,16 @@
 
   {% if admin %}
   <div class="mk-room-pane" id="room-pane-lyrics" role="tabpanel" aria-labelledby="room-tab-lyrics" hidden>
+    <label class="checkbox mb-3"><input type="checkbox" id="lyrics-auto-search" checked> 自动搜索正在播放的歌曲</label>
     <label class="label" for="lyrics-query">搜索歌词（歌名 / 歌手）</label>
     <div class="field has-addons">
       <div class="control is-expanded"><input id="lyrics-query" class="input" placeholder="歌名 + 歌手"></div>
       <div class="control"><button class="button is-info" id="lyrics-search">搜索</button></div>
     </div>
-    <div id="lyrics-results"></div>
-    <p id="lyrics-selected" class="help mb-3">为当前歌曲选择歌词，换歌后不会显示上一首的歌词。</p>
+    <div class="select is-fullwidth">
+      <select id="lyrics-results" aria-label="候选歌词" disabled><option value="">选择其他歌词版本</option></select>
+    </div>
+    <p id="lyrics-selected" class="help mb-3" aria-live="polite">暂无播放中的歌曲</p>
 
     <div class="mk-row" style="flex-wrap: wrap">
       <label class="checkbox"><input type="checkbox" id="lyrics-visible"> 显示歌词</label>
@@ -61,4 +64,3 @@
   {% endif %}
   <p id="room-control-status" class="help px-4 pb-3 m-0" role="status"></p>
 </section>
-<script src="{{ url_for('static', filename='js/room-controls.js') }}?v=2"></script>

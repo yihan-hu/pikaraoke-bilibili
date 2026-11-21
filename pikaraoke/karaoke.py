@@ -34,6 +34,7 @@ from pikaraoke.lib.play_history_manager import PlayHistoryManager
 from pikaraoke.lib.playback_controller import PlaybackController
 from pikaraoke.lib.preference_manager import PreferenceManager
 from pikaraoke.lib.queue_manager import QueueManager
+from pikaraoke.lib.room_overlays import RoomOverlays
 from pikaraoke.lib.song_manager import SongManager
 from pikaraoke.lib.sound_manager import SoundManager
 from pikaraoke.lib.stream_manager import PlaybackResult
@@ -259,6 +260,7 @@ class Karaoke:
             streaming_format=self.streaming_format,
             base_path=self.url_base_path,
         )
+        self.room_overlays = RoomOverlays()
 
         # Event bridging: the coordinator wires manager events to the UI (SocketIO/notifications).
         self.events.on("notification", self.log_and_send)
@@ -671,7 +673,15 @@ class Karaoke:
     def update_now_playing_socket(self) -> None:
         """Emit now_playing state change via SocketIO."""
         if self.socketio:
-            self.socketio.emit("now_playing", self.get_now_playing(), namespace="/")
+            playing = self.get_now_playing()
+            self.socketio.emit("now_playing", playing, namespace="/")
+            self.room_overlays.set_playing_track(
+                playing["media_key"], playing["now_playing"], self._publish_room_overlays
+            )
+
+    def _publish_room_overlays(self) -> None:
+        if self.socketio:
+            self.socketio.emit("room_overlays", self.room_overlays.state())
 
     def register_downloaded_song(self, song_path: str, youtube_id: str | None) -> None:
         """Add a finished download to the library, then announce it to browsers.

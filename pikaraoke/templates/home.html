@@ -1,4 +1,5 @@
 {% extends 'base.html' %} {% block scripts %}
+<script src="{{ url_for('static', filename='js/room-controls.js') }}?v=3"></script>
 <script>
 	// Ensure global socket exists
 	if (typeof window.socket === 'undefined') {
@@ -154,6 +155,7 @@
 		home.timer = setInterval(renderProgress, 250);
 
 		$(function () {
+			window.mountRoomControls();
 			$(".control-box").hide();
 
 			$("#seek-slider")

@@ -8,7 +8,7 @@
 
     // Configuration
     const config = {
-        contentSelector: '.box',
+        contentSelector: 'main.mk-page',
         linkSelector: 'a[href]', // Intercept all links, not just navbar
         notificationSelector: '#notification-alt',
         scrollBehavior: 'smooth'
@@ -309,7 +309,7 @@
                 // Update navigation highlighting
                 window.highlightNavItem(url.split('?')[0]);
 
-                // Sync the active-session ribbon, which lives outside .box
+                // Sync the active-session ribbon, which lives outside the main content
                 updateSessionRibbon(doc);
 
                 // Load external resources (CSS and JS) before executing inline scripts
@@ -365,8 +365,8 @@
 
     /**
      * Sync the active-session ribbon to match the freshly fetched page.
-     * It sits above .box, so the content swap alone leaves it stale when a
-     * session starts, ends, or is renamed between navigations. Written through
+     * It sits above the main content, so the content swap leaves it stale when
+     * a session starts, ends, or is renamed between navigations. Written through
      * setSessionRibbon(), the same function the socket uses, so the two paths
      * cannot render the ribbon differently -- and the node is never replaced,
      * which would restart the dot's pulse animation.

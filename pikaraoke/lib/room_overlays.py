@@ -1,10 +1,15 @@
 """Lyrics selection and lightweight room-wide screen overlays."""
 
+import logging
 import re
 import time
 import uuid
+from collections.abc import Callable
 
 import requests
+from gevent import spawn
+
+from pikaraoke.lib.metadata_parser import regex_tidy
 
 LYRICS_AGENT = "PiKaraoke-Bilibili/1.0 (https://github.com/yihan-hu/pikaraoke-bilibili)"
 
@@ -25,7 +30,7 @@ def parse_lrc(text: str) -> list[dict]:
     return sorted(lines, key=lambda line: line["time"])
 
 
-def lyrics_search(query: str) -> list[dict]:
+def _search_records(query: str) -> list[dict]:
     response = requests.get(
         "https://lrclib.net/api/search",
         params={"q": query},
@@ -34,6 +39,14 @@ def lyrics_search(query: str) -> list[dict]:
     )
     response.raise_for_status()
     return [
+        item
+        for item in response.json()[:20]
+        if item.get("plainLyrics") or item.get("syncedLyrics")
+    ]
+
+
+def _search_summaries(records: list[dict]) -> list[dict]:
+    return [
         {
             "id": item["id"],
             "title": item.get("trackName", ""),
@@ -41,9 +54,12 @@ def lyrics_search(query: str) -> list[dict]:
             "duration": item.get("duration"),
             "synced": bool(item.get("syncedLyrics")),
         }
-        for item in response.json()[:20]
-        if item.get("plainLyrics") or item.get("syncedLyrics")
+        for item in records
     ]
+
+
+def lyrics_search(query: str) -> list[dict]:
+    return _search_summaries(_search_records(query))
 
 
 def lyrics_fetch(record_id: int) -> dict:
@@ -56,21 +72,88 @@ def lyrics_fetch(record_id: int) -> dict:
 
 class RoomOverlays:
     def __init__(self):
-        self.lyrics = {
+        self.lyrics = self._empty_lyrics("bottom")
+        self.auto_search = True
+        self.track_key: str | None = None
+        self._lookup = self._empty_lookup(None, "")
+        self.danmaku_enabled = True
+        self._last_sent = {}
+
+    @staticmethod
+    def _empty_lyrics(position: str) -> dict:
+        return {
             "visible": False,
             "mode": "plain",
             "lines": [],
             "plain": [],
             "track_key": None,
+            "id": None,
             "title": "",
-            "position": "bottom",
+            "position": position,
             "offset": 0,
         }
-        self.danmaku_enabled = True
-        self._last_sent = {}
+
+    @staticmethod
+    def _empty_lookup(track_key: str | None, query: str) -> dict:
+        return {"track_key": track_key, "query": query, "status": "idle", "results": []}
 
     def state(self) -> dict:
-        return {"lyrics": self.lyrics, "danmaku_enabled": self.danmaku_enabled}
+        return {
+            "lyrics": self.lyrics.copy(),
+            "lyrics_auto_search": self.auto_search,
+            "lyrics_lookup": (
+                self._lookup.copy() if self.track_key else self._empty_lookup(None, "")
+            ),
+            "danmaku_enabled": self.danmaku_enabled,
+        }
+
+    def set_playing_track(
+        self, track_key: str | None, title: str | None, publish: Callable[[], None]
+    ) -> None:
+        """Look up each new song and preserve the selection when transposing it."""
+        if not title:
+            track_key = None
+        if track_key == self.track_key:
+            return
+        self.track_key = track_key
+        if track_key and title and track_key != self._lookup["track_key"]:
+            query = (regex_tidy(title) or title)[:200]
+            self._lookup = self._empty_lookup(track_key, query)
+            self.lyrics = self._empty_lyrics(self.lyrics["position"])
+        if track_key:
+            self._start_lyrics_search(publish)
+        publish()
+
+    def set_auto_search(self, enabled: bool, publish: Callable[[], None]) -> None:
+        """Start or cancel the automatic lookup for the current track."""
+        self.auto_search = enabled
+        if enabled and self.track_key:
+            self._start_lyrics_search(publish)
+        elif not enabled and self._lookup["status"] == "searching":
+            self._lookup = self._empty_lookup(self._lookup["track_key"], self._lookup["query"])
+
+    def _start_lyrics_search(self, publish: Callable[[], None]) -> None:
+        lookup = self._lookup
+        if not self.auto_search or lookup["status"] not in ("idle", "error"):
+            return
+        lookup["status"] = "searching"
+        spawn(self._resolve_lyrics, lookup, publish)
+
+    def _resolve_lyrics(self, lookup: dict, publish: Callable[[], None]) -> None:
+        try:
+            records = _search_records(lookup["query"])
+            # A newer song or a disabled search invalidates this request.
+            if lookup is not self._lookup:
+                return
+            lookup["results"] = _search_summaries(records)
+            if records and self.lyrics["track_key"] != lookup["track_key"]:
+                self.select_lyrics(records[0], lookup["track_key"])
+            lookup["status"] = "ready"
+        except (OSError, ValueError, KeyError) as error:
+            logging.warning("Automatic lyrics search failed for %r: %s", lookup["query"], error)
+            lookup["status"] = "error"
+        if lookup is self._lookup and self.track_key:
+            publish()
 
     def select_lyrics(self, record: dict, track_key: str) -> None:
         synced = parse_lrc((record.get("syncedLyrics") or "")[:50000])
@@ -85,6 +168,7 @@ class RoomOverlays:
             "lines": synced,
             "plain": plain,
             "track_key": track_key,
+            "id": record.get("id"),
             "title": record.get("trackName", "歌词"),
             "position": self.lyrics["position"],
             "offset": 0,

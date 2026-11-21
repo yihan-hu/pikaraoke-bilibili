@@ -46,8 +46,10 @@ def update_lyrics():
         return jsonify(error="需要管理员登录"), 403
     k, room = manager()
     data = request.get_json(silent=True) or {}
+    track_key = k.playback_controller.get_now_playing().get("media_key")
+    if data.get("track_key", track_key) != track_key:
+        return jsonify(error="歌曲已切换，请重新选择歌词"), 409
     if "id" in data or "text" in data:
-        track_key = k.playback_controller.get_now_playing().get("media_key")
         if not track_key:
             return jsonify(error="请先播放要显示歌词的歌曲"), 400
         try:
@@ -65,6 +67,8 @@ def update_lyrics():
                     "syncedLyrics": text,
                     "plainLyrics": "" if parse_lrc(text) else text,
                 }
+            if k.playback_controller.get_now_playing().get("media_key") != track_key:
+                return jsonify(error="歌曲已切换，请重新选择歌词"), 409
             room.select_lyrics(record, track_key)
         except (OSError, ValueError) as error:
             return jsonify(error=str(error)), 400
@@ -85,6 +89,8 @@ def update_lyrics():
             room.lyrics["offset"] = offset
         except (ValueError, TypeError):
             return jsonify(error="校准范围为正负120秒"), 400
+    if "auto_search" in data:
+        room.set_auto_search(data["auto_search"] is True, lambda: broadcast_state(k, room))
     broadcast_state(k, room)
     return jsonify(room.state())
 
