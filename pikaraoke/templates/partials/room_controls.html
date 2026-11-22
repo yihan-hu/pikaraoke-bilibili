@@ -33,10 +33,6 @@
       <select id="lyrics-results" aria-label="候选歌词" disabled><option value="">选择其他歌词版本</option></select>
     </div>
     <p id="lyrics-selected" class="help mb-3" aria-live="polite">暂无播放中的歌曲</p>
-    <div id="lyrics-google" hidden>
-      <a class="button is-small is-light" target="_blank" rel="noopener noreferrer">用 Google 搜歌词</a>
-      <p class="help mb-3">找到后可在下方粘贴普通歌词或 LRC。</p>
-    </div>
 
     <div class="mk-row" style="flex-wrap: wrap">
       <label class="checkbox"><input type="checkbox" id="lyrics-visible"> 显示歌词</label>
@@ -63,7 +59,7 @@
       <p class="help" id="lyrics-offset-help">歌词比演唱慢就往“提前”拖，快了就往“延后”拖，拖动时大屏实时生效。</p>
     </div>
 
-    <details id="lyrics-manual-panel" class="mt-3"><summary>粘贴普通歌词或 LRC</summary><textarea id="lyrics-manual" class="textarea mt-2" maxlength="50000" placeholder="粘贴完整歌词，或带时间戳的LRC"></textarea><button class="button mt-2" id="lyrics-apply-manual">用于当前歌曲</button></details>
+    <details class="mt-3"><summary>粘贴普通歌词或 LRC</summary><textarea id="lyrics-manual" class="textarea mt-2" maxlength="50000" placeholder="粘贴完整歌词，或带时间戳的LRC"></textarea><button class="button mt-2" id="lyrics-apply-manual">用于当前歌曲</button></details>
   </div>
   {% endif %}
   <p id="room-control-status" class="help px-4 pb-3 m-0" role="status"></p>

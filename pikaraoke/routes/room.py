@@ -55,9 +55,12 @@ def update_lyrics():
         try:
             if "id" in data:
                 record_id = data["id"]
-                if not isinstance(record_id, int) or not 0 < record_id < 2147483647:
+                if record_id == "web":
+                    record = room.get_web_lyrics(track_key)
+                elif isinstance(record_id, int) and 0 < record_id < 2147483647:
+                    record = lyrics_fetch(record_id)
+                else:
                     raise ValueError("无效歌词编号")
-                record = lyrics_fetch(record_id)
             else:
                 text = data["text"]
                 if not isinstance(text, str) or len(text) > 50000:

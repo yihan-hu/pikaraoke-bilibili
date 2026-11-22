@@ -9,9 +9,13 @@ from collections.abc import Callable
 import requests
 from gevent import spawn
 
-from pikaraoke.lib.metadata_parser import regex_tidy
-
-LYRICS_AGENT = "PiKaraoke-Bilibili/1.0 (https://github.com/yihan-hu/pikaraoke-bilibili)"
+from pikaraoke.lib.lyrics import (
+    LYRICS_AGENT,
+    clean_lyrics_query,
+    fetch_web_lyrics,
+    rank_lyrics,
+    search_lyrics_records,
+)
 
 
 def parse_lrc(text: str) -> list[dict]:
@@ -30,21 +34,6 @@ def parse_lrc(text: str) -> list[dict]:
     return sorted(lines, key=lambda line: line["time"])
 
 
-def _search_records(query: str) -> list[dict]:
-    response = requests.get(
-        "https://lrclib.net/api/search",
-        params={"q": query.replace(" - ", " ")},
-        headers={"User-Agent": LYRICS_AGENT},
-        timeout=15,
-    )
-    response.raise_for_status()
-    return [
-        item
-        for item in response.json()[:20]
-        if item.get("plainLyrics") or item.get("syncedLyrics")
-    ]
-
-
 def _search_summaries(records: list[dict]) -> list[dict]:
     return [
         {
@@ -53,13 +42,16 @@ def _search_summaries(records: list[dict]) -> list[dict]:
             "artist": item.get("artistName", ""),
             "duration": item.get("duration"),
             "synced": bool(item.get("syncedLyrics")),
+            "source": item.get("source"),
         }
         for item in records
     ]
 
 
 def lyrics_search(query: str) -> list[dict]:
-    return _search_summaries(_search_records(query))
+    query = clean_lyrics_query(query)
+    records = search_lyrics_records(query)
+    return _search_summaries((rank_lyrics(records, query) or records)[:20])
 
 
 def lyrics_fetch(record_id: int) -> dict:
@@ -76,6 +68,7 @@ class RoomOverlays:
         self.auto_search = True
         self.track_key: str | None = None
         self._lookup = self._empty_lookup(None, "")
+        self._web_lyrics: dict | None = None
         self.danmaku_enabled = True
         self._last_sent = {}
 
@@ -89,6 +82,7 @@ class RoomOverlays:
             "track_key": None,
             "id": None,
             "title": "",
+            "source": None,
             "position": position,
             "offset": 0,
         }
@@ -117,8 +111,9 @@ class RoomOverlays:
             return
         self.track_key = track_key
         if track_key and title and track_key != self._lookup["track_key"]:
-            query = (regex_tidy(title) or title)[:200]
+            query = clean_lyrics_query(title) or title[:200]
             self._lookup = self._empty_lookup(track_key, query)
+            self._web_lyrics = None
             self.lyrics = self._empty_lyrics(self.lyrics["position"])
         if track_key:
             self._start_lyrics_search(publish)
@@ -129,7 +124,7 @@ class RoomOverlays:
         self.auto_search = enabled
         if enabled and self.track_key:
             self._start_lyrics_search(publish)
-        elif not enabled and self._lookup["status"] == "searching":
+        elif not enabled and self._lookup["status"] in ("searching", "web_search"):
             self._lookup = self._empty_lookup(self._lookup["track_key"], self._lookup["query"])
 
     def _start_lyrics_search(self, publish: Callable[[], None]) -> None:
@@ -140,21 +135,44 @@ class RoomOverlays:
         spawn(self._resolve_lyrics, lookup, publish)
 
     def _resolve_lyrics(self, lookup: dict, publish: Callable[[], None]) -> None:
+        status = "ready"
         try:
-            records = _search_records(lookup["query"])
-            # A newer song or a disabled search invalidates this request.
+            query = lookup["query"]
+            records = rank_lyrics(search_lyrics_records(query), query)[:20]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            logging.warning("Automatic lyrics search failed for %r: %s", lookup["query"], error)
+            status, records = "error", []
+        # A newer song or a disabled search invalidates the pending response.
+        if lookup is not self._lookup:
+            return
+        best = records[0] if records else None
+        if not best or not parse_lrc(best.get("syncedLyrics") or ""):
+            lookup["status"] = "web_search"
+            lookup["results"] = _search_summaries(records)
+            if self.track_key:
+                publish()
+            web = fetch_web_lyrics(lookup["query"])
             if lookup is not self._lookup:
                 return
-            records.sort(key=lambda record: not record.get("syncedLyrics"))
-            lookup["results"] = _search_summaries(records)
-            if records and self.lyrics["track_key"] != lookup["track_key"]:
-                self.select_lyrics(records[0], lookup["track_key"])
-            lookup["status"] = "ready"
-        except (OSError, ValueError, KeyError) as error:
-            logging.warning("Automatic lyrics search failed for %r: %s", lookup["query"], error)
-            lookup["status"] = "error"
+            if web:
+                self._web_lyrics = web
+                records = [web, *records[:19]]
+                best, status = web, "ready"
+        lookup["results"] = _search_summaries(records)
+        if best and self.lyrics["track_key"] != lookup["track_key"]:
+            try:
+                self.select_lyrics(best, lookup["track_key"])
+            except ValueError as error:
+                logging.warning("Automatic lyrics selection failed: %s", error)
+                status = "error"
+        lookup["status"] = status
         if lookup is self._lookup and self.track_key:
             publish()
+
+    def get_web_lyrics(self, track_key: str) -> dict:
+        if self.track_key != track_key or not self._web_lyrics:
+            raise ValueError("网页歌词已失效，请重新选择")
+        return self._web_lyrics
 
     def select_lyrics(self, record: dict, track_key: str) -> None:
         synced = parse_lrc((record.get("syncedLyrics") or "")[:50000])
@@ -171,6 +189,7 @@ class RoomOverlays:
             "track_key": track_key,
             "id": record.get("id"),
             "title": record.get("trackName", "歌词"),
+            "source": record.get("source"),
             "position": self.lyrics["position"],
             "offset": 0,
         }

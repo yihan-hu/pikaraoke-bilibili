@@ -17,7 +17,6 @@
     let trackKey = null;
     let lookup = {results: []};
     let selectedId = null;
-    let hasSyncedLyrics = false;
     let manualResults = null;
     let searchRequest = 0;
     let candidateRequest = null;
@@ -60,21 +59,11 @@
       const options = [new Option(prompt, '')];
       for (const item of results) {
         const version = item.synced ? '同步版' : '普通版';
-        options.push(new Option(`${item.title} — ${item.artist} · ${version}`, item.id));
+        const label = [item.title + (item.artist ? ' — ' + item.artist : ''), version, item.source];
+        options.push(new Option(label.filter(Boolean).join(' · '), item.id));
       }
       candidateSelect.empty().append(options)
         .prop('disabled', !trackKey || !results.length || candidateRequest !== null);
-    }
-
-    function renderGoogleFallback() {
-      const query = (find('#lyrics-query').val() || lookup.query || '').trim();
-      const show = !!trackKey && !!query && !hasSyncedLyrics && lookup.status !== 'searching';
-      const fallback = find('#lyrics-google').prop('hidden', !show);
-      if (show) {
-        const keyword = /[\u3400-\u9fff]/.test(query) ? '歌词' : 'lyrics';
-        const params = new URLSearchParams({q: query + ' ' + keyword});
-        fallback.find('a').attr('href', 'https://www.google.com/search?' + params);
-      }
     }
 
     function state(data) {
@@ -97,7 +86,6 @@
 
       const lyrics = data.lyrics;
       const hasSelection = !!trackKey && lyrics.track_key === trackKey;
-      hasSyncedLyrics = hasSelection && lyrics.lines.length > 0;
       const oldSelectedId = selectedId;
       selectedId = hasSelection ? lyrics.id : null;
       find('#lyrics-auto-search').prop('checked', data.lyrics_auto_search);
@@ -112,13 +100,14 @@
       const status = {
         idle: '请为当前歌曲选择歌词',
         searching: '正在自动搜索歌词…',
-        ready: '未找到匹配歌词，可手动搜索或粘贴歌词',
-        error: '歌词服务暂时不可用，可手动搜索或粘贴歌词'
+        web_search: '未找到同步歌词，正在自动搜索网页歌词…',
+        ready: '自动搜索未找到匹配歌词',
+        error: '暂未找到歌词，部分歌词源不可用'
       };
+      const title = lyrics.source ? lyrics.title + ' · ' + lyrics.source : lyrics.title;
       find('#lyrics-selected').text(
-        hasSelection ? '已选择：' + lyrics.title : (trackKey ? status[lookup.status] : '暂无播放中的歌曲')
+        hasSelection ? '已选择：' + title : (trackKey ? status[lookup.status] : '暂无播放中的歌曲')
       );
-      renderGoogleFallback();
       if (changedTrack || oldSelectedId !== selectedId || previousLookup.status !== lookup.status) {
         renderCandidates();
       }
@@ -186,11 +175,10 @@
     $panel.on('keydown', '#lyrics-query', function (event) {
       if (event.key === 'Enter') { event.preventDefault(); find('#lyrics-search').trigger('click'); }
     });
-    $panel.on('input', '#lyrics-query', renderGoogleFallback);
-    $panel.on('click', '#lyrics-google a', () => find('#lyrics-manual-panel').prop('open', true));
     $panel.on('change', '#lyrics-results', async function () {
       if (!this.value || !trackKey || candidateRequest) return;
-      const request = update({id: Number(this.value), track_key: trackKey});
+      const id = this.value === 'web' ? this.value : Number(this.value);
+      const request = update({id, track_key: trackKey});
       candidateRequest = request;
       candidateSelect.prop('disabled', true);
       await request;
