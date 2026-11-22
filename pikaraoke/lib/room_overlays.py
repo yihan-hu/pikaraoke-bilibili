@@ -33,7 +33,7 @@ def parse_lrc(text: str) -> list[dict]:
 def _search_records(query: str) -> list[dict]:
     response = requests.get(
         "https://lrclib.net/api/search",
-        params={"q": query},
+        params={"q": query.replace(" - ", " ")},
         headers={"User-Agent": LYRICS_AGENT},
         timeout=15,
     )
@@ -145,6 +145,7 @@ class RoomOverlays:
             # A newer song or a disabled search invalidates this request.
             if lookup is not self._lookup:
                 return
+            records.sort(key=lambda record: not record.get("syncedLyrics"))
             lookup["results"] = _search_summaries(records)
             if records and self.lyrics["track_key"] != lookup["track_key"]:
                 self.select_lyrics(records[0], lookup["track_key"])

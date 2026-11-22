@@ -95,6 +95,7 @@
     }
 
     function connectSocket() {
+      if (window.socket) return;
       window.socket = io({ path: window.pikaraokeConfig.socketioPath });
       window.socket.on('connect', function() {
           console.log('Socket connected');
@@ -245,10 +246,7 @@
       window.socket.on("now_playing", window.sessionRibbonHandler);
     }
 
-    // Keeps the singer field in step with the session, over a socket that
-    // outlives SPA page swaps. io() hands back the same instance every time, so
-    // this script re-running on each navigation would stack another handler
-    // unless the previous one is removed first.
+    // Replace the page's singer listener on the shared socket after each SPA swap.
     function bindSingerFieldToSession() {
       if (!window.socket) {
         return;
